@@ -269,6 +269,9 @@ jobs:
       - name: Install Ansible
         run: pip install ansible-core==${{ env.ANSIBLE_VERSION }}
 
+      - name: Install Ansible Collections
+        run: ansible-galaxy collection install -r ansible/requirements.yml
+
       - name: Packer Init
         run: packer init .
         working-directory: packer
@@ -335,6 +338,9 @@ jobs:
 
       - name: Install Ansible
         run: pip install ansible-core==${{ env.ANSIBLE_VERSION }}
+
+      - name: Install Ansible Collections
+        run: ansible-galaxy collection install -r ansible/requirements.yml
 
       - name: Packer Init
         run: packer init .
