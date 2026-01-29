@@ -182,11 +182,15 @@ jobs:
         run: |
           ansible-playbook playbooks/jenkins-controller.yml --syntax-check
         working-directory: ansible
+        env:
+          ANSIBLE_ROLES_PATH: roles
 
       - name: Ansible Syntax Check - Agent
         run: |
           ansible-playbook playbooks/jenkins-agent.yml --syntax-check
         working-directory: ansible
+        env:
+          ANSIBLE_ROLES_PATH: roles
 
   # --------------------------------------------------------------------------
   # Job: Validate Terraform Configuration
