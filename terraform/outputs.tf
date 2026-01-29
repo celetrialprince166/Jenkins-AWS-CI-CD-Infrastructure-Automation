@@ -135,7 +135,7 @@ output "agent_ssh_key_secret_name" {
 
 output "deployment_summary" {
   description = "Summary of the deployment"
-  value = <<-EOT
+  value       = <<-EOT
     
     ============================================
     Jenkins Infrastructure Deployed Successfully!

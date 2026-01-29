@@ -100,16 +100,16 @@ resource "aws_efs_access_point" "jenkins" {
 
     # Create directory if it doesn't exist
     creation_info {
-      owner_gid   = 1000  # jenkins group
-      owner_uid   = 1000  # jenkins user
+      owner_gid   = 1000 # jenkins group
+      owner_uid   = 1000 # jenkins user
       permissions = "0755"
     }
   }
 
   # POSIX user for all operations through this access point
   posix_user {
-    gid = 1000  # jenkins group
-    uid = 1000  # jenkins user
+    gid = 1000 # jenkins group
+    uid = 1000 # jenkins user
   }
 
   tags = merge(var.tags, {

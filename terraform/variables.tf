@@ -134,7 +134,7 @@ variable "controller_volume_size" {
 variable "agent_ami_id" {
   type        = string
   description = "AMI ID for Jenkins agent (from Packer build)"
-  default = "ami-0ce613c152da76879"
+  default     = "ami-0ce613c152da76879"
   # No default - must be provided
 }
 

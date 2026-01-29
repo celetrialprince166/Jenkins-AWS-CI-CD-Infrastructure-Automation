@@ -51,13 +51,13 @@ resource "aws_lb_target_group" "jenkins" {
     path                = var.health_check_path
     port                = "traffic-port"
     protocol            = "HTTP"
-    matcher             = "200,403"  # 403 is OK (login page)
+    matcher             = "200,403" # 403 is OK (login page)
   }
 
   # Stickiness - keep user on same instance
   stickiness {
     type            = "lb_cookie"
-    cookie_duration = 86400  # 24 hours
+    cookie_duration = 86400 # 24 hours
     enabled         = true
   }
 

@@ -23,7 +23,7 @@
 # ============================================================================
 
 terraform {
-  required_version = ">= 1.10.0"  # Required for use_lockfile
+  required_version = ">= 1.10.0" # Required for use_lockfile
 
   required_providers {
     aws = {
@@ -209,9 +209,9 @@ resource "aws_iam_policy" "terraform_state_access" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "S3ListBucket"
-        Effect = "Allow"
-        Action = "s3:ListBucket"
+        Sid      = "S3ListBucket"
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
         Resource = aws_s3_bucket.terraform_state.arn
       },
       {

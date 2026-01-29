@@ -127,10 +127,10 @@ module "asg" {
 
   # User data scripts
   controller_user_data = templatefile("${path.module}/templates/controller-user-data.sh", {
-    efs_dns_name            = module.efs.efs_dns_name
-    jenkins_home            = local.jenkins_home
-    jenkins_user            = local.jenkins_user
-    aws_region              = var.aws_region
+    efs_dns_name              = module.efs.efs_dns_name
+    jenkins_home              = local.jenkins_home
+    jenkins_user              = local.jenkins_user
+    aws_region                = var.aws_region
     agent_ssh_key_secret_name = aws_secretsmanager_secret.jenkins_agent_key.name
   })
 

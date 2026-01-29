@@ -118,10 +118,10 @@ source "amazon-ebs" "jenkins_agent" {
     OS          = "Ubuntu 22.04"
     ManagedBy   = "Packer"
     # Agent-specific tags
-    HasDocker   = "true"
-    HasMaven    = "true"
-    HasNodeJS   = "true"
-    HasPython   = "true"
+    HasDocker = "true"
+    HasMaven  = "true"
+    HasNodeJS = "true"
+    HasPython = "true"
   }
 
   snapshot_tags = {

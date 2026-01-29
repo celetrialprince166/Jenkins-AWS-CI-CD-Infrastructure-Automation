@@ -38,11 +38,11 @@
 data "amazon-ami" "ubuntu_controller" {
   filters = {
     # Match Ubuntu 22.04 (Jammy) server images
-    name                = var.source_ami_name_filter
+    name = var.source_ami_name_filter
     # Only HVM virtualization (required for modern instance types)
     virtualization-type = "hvm"
     # EBS-backed (not instance-store)
-    root-device-type    = "ebs"
+    root-device-type = "ebs"
   }
 
   # Only AMIs from Canonical (Ubuntu's official publisher)
@@ -244,8 +244,8 @@ build {
         "-e", "@../ansible/group_vars/all.yml",
         # Pass variables to Ansible
         "-e", "node_type=controller",
-        "-e", "mount_efs=false",      # Don't mount EFS during build
-        "-e", "skip_efs_role=true",   # Skip EFS role entirely
+        "-e", "mount_efs=false",    # Don't mount EFS during build
+        "-e", "skip_efs_role=true", # Skip EFS role entirely
       ]
     )
 

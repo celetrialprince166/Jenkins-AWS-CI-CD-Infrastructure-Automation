@@ -141,9 +141,9 @@ resource "aws_iam_role_policy" "controller_ec2" {
         ]
       },
       {
-        Sid    = "IAMPassRole"
-        Effect = "Allow"
-        Action = "iam:PassRole"
+        Sid      = "IAMPassRole"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
         Resource = aws_iam_role.agent.arn
         Condition = {
           StringEquals = {

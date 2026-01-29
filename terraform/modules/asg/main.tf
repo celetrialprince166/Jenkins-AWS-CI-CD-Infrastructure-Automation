@@ -46,7 +46,7 @@ resource "aws_launch_template" "controller" {
   # Metadata options
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "required"  # IMDSv2
+    http_tokens                 = "required" # IMDSv2
     http_put_response_hop_limit = 1
   }
 
@@ -92,7 +92,7 @@ resource "aws_autoscaling_group" "controller" {
 
   # Health check configuration
   health_check_type         = "ELB"
-  health_check_grace_period = 600  # 10 minutes for Jenkins to start
+  health_check_grace_period = 600 # 10 minutes for Jenkins to start
 
   # Launch template
   launch_template {
@@ -173,7 +173,7 @@ resource "aws_launch_template" "agent" {
     tags = merge(var.tags, {
       Name      = "${var.name_prefix}-agent"
       NodeType  = "agent"
-      ManagedBy = "Jenkins"  # For EC2 plugin
+      ManagedBy = "Jenkins" # For EC2 plugin
     })
   }
 
@@ -249,7 +249,7 @@ resource "aws_autoscaling_policy" "controller_scale_out" {
   autoscaling_group_name = aws_autoscaling_group.controller.name
   adjustment_type        = "ChangeInCapacity"
   scaling_adjustment     = 1
-  cooldown               = 300  # 5 minutes between scaling actions
+  cooldown               = 300 # 5 minutes between scaling actions
 
   # Policy type: Simple scaling (good for manual testing)
   policy_type = "SimpleScaling"
@@ -274,7 +274,7 @@ resource "aws_autoscaling_policy" "agent_scale_out" {
   autoscaling_group_name = aws_autoscaling_group.agent.name
   adjustment_type        = "ChangeInCapacity"
   scaling_adjustment     = 1
-  cooldown               = 120  # 2 minutes (agents can scale faster)
+  cooldown               = 120 # 2 minutes (agents can scale faster)
 
   policy_type = "SimpleScaling"
 }
@@ -319,14 +319,14 @@ resource "aws_autoscaling_policy" "agent_cpu_target_tracking" {
   policy_type            = "TargetTrackingScaling"
 
   # Cooldowns are estimated - AWS manages actual timing for target tracking
-  estimated_instance_warmup = 120  # 2 minutes for agent to be ready
+  estimated_instance_warmup = 120 # 2 minutes for agent to be ready
 
   target_tracking_configuration {
     predefined_metric_specification {
       predefined_metric_type = "ASGAverageCPUUtilization"
     }
 
-    target_value = var.agent_cpu_target  # Default: 50%
+    target_value = var.agent_cpu_target # Default: 50%
 
     # Allow scale-in (set to true to disable scale-in)
     disable_scale_in = false
@@ -345,14 +345,14 @@ resource "aws_autoscaling_policy" "controller_cpu_target_tracking" {
   policy_type            = "TargetTrackingScaling"
 
   # Controllers need more time to initialize (Jenkins startup)
-  estimated_instance_warmup = 600  # 10 minutes for Jenkins to start
+  estimated_instance_warmup = 600 # 10 minutes for Jenkins to start
 
   target_tracking_configuration {
     predefined_metric_specification {
       predefined_metric_type = "ASGAverageCPUUtilization"
     }
 
-    target_value = var.controller_cpu_target  # Default: 60%
+    target_value = var.controller_cpu_target # Default: 60%
 
     # Allow scale-in (set to true to disable scale-in)
     disable_scale_in = false

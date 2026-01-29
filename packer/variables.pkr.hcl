@@ -91,7 +91,7 @@ variable "source_ami_name_filter" {
 variable "source_ami_owner" {
   type        = string
   description = "AWS account ID of the source AMI owner"
-  default     = "099720109477"  # Canonical (Ubuntu)
+  default     = "099720109477" # Canonical (Ubuntu)
 }
 
 # ============================================================================
@@ -202,7 +202,7 @@ variable "ansible_playbook_agent" {
 variable "ansible_extra_arguments" {
   type        = list(string)
   description = "Extra arguments for ansible-playbook command"
-  default     = ["-v"]  # Verbose mode for debugging
+  default     = ["-v"] # Verbose mode for debugging
 }
 
 # ============================================================================
