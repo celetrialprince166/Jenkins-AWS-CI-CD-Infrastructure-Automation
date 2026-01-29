@@ -1,0 +1,239 @@
+# ============================================================================
+# COMMON ROLE - Base Setup for All Servers
+# ============================================================================
+# PURPOSE: Tasks that run on EVERY server (controller and agent)
+# LOCATION: ansible/roles/common/tasks/main.yml
+# USED BY: playbooks/jenkins-controller.yml, playbooks/jenkins-agent.yml
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# TASK 1: Wait for cloud-init to complete
+# ----------------------------------------------------------------------------
+# WHY: When EC2 instances launch, cloud-init runs first to configure the system
+#      If we start installing packages before cloud-init finishes, we can get
+#      lock conflicts (apt lock) or incomplete network configuration
+# HOW: We check if cloud-init has finished by looking at its status
+# WHEN: This should ALWAYS be the first task on any new EC2 instance
+# ----------------------------------------------------------------------------
+- name: Wait for cloud-init to complete
+  command: cloud-init status --wait
+  changed_when: false  # This command doesn't change anything, just waits
+  register: cloud_init_result
+  # Timeout after 5 minutes - if cloud-init takes longer, something is wrong
+  async: 300
+  poll: 10
+
+# ----------------------------------------------------------------------------
+# TASK 2: Update apt cache
+# ----------------------------------------------------------------------------
+# WHY: apt cache contains the list of available packages and versions
+#      If cache is stale, we might install old versions or fail to find packages
+# HOW: 'apt update' refreshes the cache from configured repositories
+# WHEN: Always run before installing packages
+# IDEMPOTENT: cache_valid_time=3600 means skip if updated within last hour
+# ----------------------------------------------------------------------------
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600  # Don't update if cache is less than 1 hour old
+  # Retry logic - sometimes apt is locked by unattended-upgrades
+  retries: 3
+  delay: 10
+  register: apt_update
+  until: apt_update is success
+
+# ----------------------------------------------------------------------------
+# TASK 3: Upgrade all packages
+# ----------------------------------------------------------------------------
+# WHY: Security patches and bug fixes - always start with latest packages
+# HOW: 'apt upgrade' installs newer versions of installed packages
+# OPTION: 'dist-upgrade' would also handle dependency changes (more aggressive)
+# NOTE: This can take several minutes on a fresh instance
+# ----------------------------------------------------------------------------
+- name: Upgrade all packages to latest version
+  apt:
+    upgrade: safe  # 'safe' won't remove packages, 'dist' might
+    autoremove: yes  # Remove packages that are no longer needed
+  register: apt_upgrade
+  # Retry in case of lock
+  retries: 3
+  delay: 10
+  until: apt_upgrade is success
+
+# ----------------------------------------------------------------------------
+# TASK 4: Install common packages
+# ----------------------------------------------------------------------------
+# WHY: These packages are needed on ALL servers for basic operations
+# HOW: Loop through the list defined in group_vars/all.yml
+# VARIABLE: common_packages is defined in group_vars/all.yml
+# IDEMPOTENT: state=present means "install if not present, do nothing if present"
+# ----------------------------------------------------------------------------
+- name: Install common packages
+  apt:
+    name: "{{ common_packages }}"
+    state: present
+  # Retry in case of lock or network issues
+  retries: 3
+  delay: 10
+  register: common_packages_install
+  until: common_packages_install is success
+
+# ----------------------------------------------------------------------------
+# TASK 5: Set timezone
+# ----------------------------------------------------------------------------
+# WHY: Consistent timestamps across all servers for logs and scheduled jobs
+# HOW: Uses the timezone module to set system timezone
+# VARIABLE: system_timezone is defined in group_vars/all.yml (default: UTC)
+# IDEMPOTENT: Only changes if current timezone differs
+# ----------------------------------------------------------------------------
+- name: Set timezone to {{ system_timezone }}
+  timezone:
+    name: "{{ system_timezone }}"
+
+# ----------------------------------------------------------------------------
+# TASK 6: Configure automatic security updates
+# ----------------------------------------------------------------------------
+# WHY: Security patches should be applied automatically
+# HOW: Install and configure unattended-upgrades package
+# NOTE: Only security updates, not all updates (to avoid breaking changes)
+# ----------------------------------------------------------------------------
+- name: Install unattended-upgrades
+  apt:
+    name: unattended-upgrades
+    state: present
+
+- name: Enable automatic security updates
+  copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    mode: '0644'
+    owner: root
+    group: root
+
+# ----------------------------------------------------------------------------
+# TASK 7: Configure system limits
+# ----------------------------------------------------------------------------
+# WHY: Jenkins and build processes can open many files and processes
+#      Default limits (1024) are too low and cause "too many open files" errors
+# HOW: Set limits in /etc/security/limits.d/
+# VALUES: 65535 is a common high value that works for most use cases
+# ----------------------------------------------------------------------------
+- name: Configure system limits for Jenkins
+  copy:
+    dest: /etc/security/limits.d/jenkins.conf
+    content: |
+      # Limits for Jenkins and build processes
+      # Format: <domain> <type> <item> <value>
+      
+      # Jenkins user limits
+      jenkins soft nofile 65535
+      jenkins hard nofile 65535
+      jenkins soft nproc 65535
+      jenkins hard nproc 65535
+      
+      # Root limits (for sudo operations)
+      root soft nofile 65535
+      root hard nofile 65535
+    mode: '0644'
+    owner: root
+    group: root
+
+# ----------------------------------------------------------------------------
+# TASK 8: Disable swap (optional but recommended)
+# ----------------------------------------------------------------------------
+# WHY: Swap can cause unpredictable performance in CI/CD workloads
+#      Better to fail fast than run slowly with swap
+# HOW: Turn off swap and remove from fstab
+# NOTE: Ensure instance has enough RAM if disabling swap
+# ----------------------------------------------------------------------------
+- name: Disable swap
+  command: swapoff -a
+  changed_when: false
+  ignore_errors: yes  # OK if swap wasn't enabled
+
+- name: Remove swap from fstab
+  lineinfile:
+    path: /etc/fstab
+    regexp: '\sswap\s'
+    state: absent
+
+# ----------------------------------------------------------------------------
+# TASK 9: Configure sysctl for performance
+# ----------------------------------------------------------------------------
+# WHY: Default kernel settings aren't optimized for CI/CD workloads
+# HOW: Set kernel parameters via sysctl
+# PARAMETERS:
+#   - vm.swappiness=10: Reduce swap usage (0-100, lower = less swap)
+#   - net.core.somaxconn=65535: Max socket connections (for Jenkins agents)
+#   - fs.file-max=2097152: Max open files system-wide
+# ----------------------------------------------------------------------------
+- name: Configure sysctl parameters
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-jenkins.conf
+    reload: yes
+  loop:
+    - { name: 'vm.swappiness', value: '10' }
+    - { name: 'net.core.somaxconn', value: '65535' }
+    - { name: 'fs.file-max', value: '2097152' }
+    - { name: 'net.ipv4.tcp_max_syn_backlog', value: '65535' }
+
+# ----------------------------------------------------------------------------
+# TASK 10: Create jenkins user (if not exists)
+# ----------------------------------------------------------------------------
+# WHY: Jenkins needs a dedicated user for security (not root)
+# HOW: Create user with home directory and bash shell
+# NOTE: Jenkins package also creates this user, but we do it first to ensure
+#       consistent UID/GID across controller and agents
+# IDEMPOTENT: Only creates if user doesn't exist
+# ----------------------------------------------------------------------------
+- name: Create jenkins group
+  group:
+    name: "{{ jenkins_group }}"
+    state: present
+
+- name: Create jenkins user
+  user:
+    name: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    home: "{{ jenkins_home }}"
+    shell: /bin/bash
+    create_home: yes
+    state: present
+
+# ----------------------------------------------------------------------------
+# TASK 11: Ensure jenkins home directory exists with correct permissions
+# ----------------------------------------------------------------------------
+# WHY: Jenkins home must exist and be writable by jenkins user
+# HOW: Create directory and set ownership
+# NOTE: On controller, this will be the EFS mount point
+# ----------------------------------------------------------------------------
+- name: Ensure Jenkins home directory exists
+  file:
+    path: "{{ jenkins_home }}"
+    state: directory
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0755'
+
+# ----------------------------------------------------------------------------
+# TASK 12: Display completion message
+# ----------------------------------------------------------------------------
+# WHY: Helpful for debugging and confirming role completed
+# HOW: Debug message with gathered facts
+# ----------------------------------------------------------------------------
+- name: Common role completed
+  debug:
+    msg: |
+      Common setup completed successfully!
+      - Hostname: {{ ansible_hostname }}
+      - OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      - Timezone: {{ system_timezone }}
+      - Jenkins user: {{ jenkins_user }}
+      - Jenkins home: {{ jenkins_home }}

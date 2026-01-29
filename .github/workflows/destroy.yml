@@ -1,0 +1,182 @@
+# ============================================================================
+# GITHUB ACTIONS WORKFLOW - Infrastructure Destroy
+# ============================================================================
+# PURPOSE: Safely destroy infrastructure (for cleanup or cost savings)
+# LOCATION: .github/workflows/destroy.yml
+# ============================================================================
+#
+# SAFETY FEATURES:
+# - Manual trigger only (workflow_dispatch)
+# - Requires explicit confirmation input
+# - Environment protection rules apply
+# - Logs all actions for audit trail
+#
+# ============================================================================
+
+name: Destroy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to destroy'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      confirm:
+        description: 'Type "DESTROY" to confirm'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for destruction'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: eu-west-1
+  TF_VERSION: "1.10.0"    # Required for S3 native state locking (use_lockfile)
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  # ==========================================================================
+  # VALIDATION - Ensure user really wants to destroy
+  # ==========================================================================
+  validate-destroy:
+    name: "Validate Destroy Request"
+    runs-on: ubuntu-latest
+    outputs:
+      confirmed: ${{ steps.check.outputs.confirmed }}
+    
+    steps:
+      - name: Check Confirmation
+        id: check
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DESTROY" ]; then
+            echo "::error::Confirmation failed. You must type 'DESTROY' to proceed."
+            echo "confirmed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "confirmed=true" >> $GITHUB_OUTPUT
+          
+          echo "## Destroy Request Validated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Requested By | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Reason | ${{ github.event.inputs.reason }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Timestamp | $(date -u) |" >> $GITHUB_STEP_SUMMARY
+
+  # ==========================================================================
+  # PLAN DESTROY - Show what will be destroyed
+  # ==========================================================================
+  plan-destroy:
+    name: "Plan Destroy"
+    needs: validate-destroy
+    if: needs.validate-destroy.outputs.confirmed == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      - name: Terraform Plan Destroy
+        run: |
+          echo "::group::Terraform Destroy Plan"
+          terraform plan -destroy \
+            -var="environment=${{ github.event.inputs.environment }}" \
+            -out=destroy.tfplan 2>&1 | tee destroy-plan.txt
+          echo "::endgroup::"
+          
+          echo "## Resources to be Destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          grep -E "^  # |will be destroyed" destroy-plan.txt >> $GITHUB_STEP_SUMMARY || echo "No resources to destroy" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        working-directory: terraform
+
+      - name: Upload Destroy Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: destroy-plan
+          path: |
+            terraform/destroy.tfplan
+            terraform/destroy-plan.txt
+          retention-days: 1
+
+  # ==========================================================================
+  # EXECUTE DESTROY - Actually destroy infrastructure
+  # ==========================================================================
+  execute-destroy:
+    name: "Execute Destroy"
+    needs: [validate-destroy, plan-destroy]
+    runs-on: ubuntu-latest
+    environment: 
+      name: ${{ github.event.inputs.environment }}-destroy
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Download Destroy Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: destroy-plan
+          path: terraform
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      - name: Terraform Destroy
+        run: |
+          echo "::warning::Destroying infrastructure for ${{ github.event.inputs.environment }}"
+          echo "::group::Terraform Destroy"
+          terraform apply -auto-approve destroy.tfplan
+          echo "::endgroup::"
+        working-directory: terraform
+
+      - name: Destruction Complete
+        run: |
+          echo "## Infrastructure Destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ github.event.inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Destroyed By | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Reason | ${{ github.event.inputs.reason }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Completed At | $(date -u) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **All resources have been destroyed.**" >> $GITHUB_STEP_SUMMARY

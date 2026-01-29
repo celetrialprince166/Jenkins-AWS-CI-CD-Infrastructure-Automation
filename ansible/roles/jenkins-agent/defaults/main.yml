@@ -1,0 +1,195 @@
+# ============================================================================
+# JENKINS AGENT ROLE - Default Variables
+# ============================================================================
+# PURPOSE: Default values for Jenkins Agent (Slave) node setup
+# LOCATION: ansible/roles/jenkins-agent/defaults/main.yml
+# OVERRIDE: These can be overridden in group_vars/all.yml or playbook vars
+# ============================================================================
+#
+# KEY CONCEPT: Agents vs Controllers
+# ----------------------------------
+# CONTROLLER: Runs Jenkins server, manages jobs, serves UI
+# AGENT: Executes builds, runs tests, deploys code
+#
+# Agents do NOT have Jenkins installed - they just have:
+# - Java (required to run agent.jar)
+# - Build tools (Maven, Docker, Node.js, etc.)
+# - SSH access (for controller to connect)
+#
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# JENKINS AGENT USER
+# ----------------------------------------------------------------------------
+
+# AGENT USER
+# ----------
+# WHAT: System user that runs Jenkins agent process
+# WHY: Should match controller's jenkins user for consistency
+# NOTE: This user runs all build commands
+jenkins_agent_user: "jenkins"
+
+# AGENT GROUP
+# -----------
+# WHAT: Primary group for agent user
+jenkins_agent_group: "jenkins"
+
+# AGENT HOME
+# ----------
+# WHAT: Home directory for jenkins user on agent
+# WHY: Different from controller - agents don't need /var/lib/jenkins
+# NOTE: This is where agent.jar and workspaces live
+jenkins_agent_home: "/home/jenkins"
+
+# ----------------------------------------------------------------------------
+# AGENT WORKSPACE
+# ----------------------------------------------------------------------------
+
+# WORKSPACE DIRECTORY
+# -------------------
+# WHAT: Where job workspaces are created
+# WHY: Each job gets a subdirectory here for its files
+# SIZE: Can grow large - ensure enough disk space
+# NOTE: This is LOCAL storage, not shared (unlike controller's EFS)
+jenkins_agent_workspace: "{{ jenkins_agent_home }}/workspace"
+
+# TOOLS DIRECTORY
+# ---------------
+# WHAT: Where build tools are installed
+# WHY: Some tools (like Maven, Gradle) need a dedicated directory
+jenkins_agent_tools_dir: "{{ jenkins_agent_home }}/tools"
+
+# ----------------------------------------------------------------------------
+# SSH CONFIGURATION
+# ----------------------------------------------------------------------------
+# The controller connects to agents via SSH to launch the agent process
+# ----------------------------------------------------------------------------
+
+# SSH DIRECTORY
+# -------------
+# WHAT: SSH configuration directory for jenkins user
+jenkins_agent_ssh_dir: "{{ jenkins_agent_home }}/.ssh"
+
+# AUTHORIZED KEYS
+# ---------------
+# WHAT: File containing public keys allowed to connect
+# WHY: Controller's public key goes here
+# NOTE: Key is added at runtime by Terraform/EC2 plugin
+jenkins_agent_authorized_keys: "{{ jenkins_agent_ssh_dir }}/authorized_keys"
+
+# ----------------------------------------------------------------------------
+# BUILD TOOLS
+# ----------------------------------------------------------------------------
+# Tools installed on agents for building/testing code
+# ----------------------------------------------------------------------------
+
+# INSTALL DOCKER
+# --------------
+# WHAT: Whether to install Docker on agents
+# WHY: Many CI/CD pipelines use Docker for builds
+# DEFAULT: true - Docker is essential for modern CI/CD
+install_docker: true
+
+# INSTALL MAVEN
+# -------------
+# WHAT: Whether to install Apache Maven
+# WHY: Java project builds
+install_maven: true
+
+# INSTALL NODEJS
+# --------------
+# WHAT: Whether to install Node.js and npm
+# WHY: JavaScript/TypeScript project builds
+install_nodejs: true
+
+# INSTALL PYTHON
+# --------------
+# WHAT: Whether to install Python 3 and pip
+# WHY: Python project builds and scripting
+install_python: true
+
+# MAVEN VERSION
+# -------------
+# WHAT: Maven version to install
+# WHY: Pinning version ensures reproducible builds
+maven_version: "3.9.6"
+
+# NODEJS VERSION
+# --------------
+# WHAT: Node.js major version to install
+# WHY: Use LTS version for stability
+# OPTIONS: 18, 20, 22 (LTS versions)
+nodejs_version: "20"
+
+# PYTHON PACKAGES
+# ---------------
+# WHAT: Python packages to install via pip
+# WHY: Common tools needed for builds
+python_packages:
+  - pip
+  - setuptools
+  - wheel
+  - virtualenv
+  - awscli
+
+# ----------------------------------------------------------------------------
+# DOCKER CONFIGURATION
+# ----------------------------------------------------------------------------
+
+# DOCKER GROUP MEMBERSHIP
+# -----------------------
+# WHAT: Add jenkins user to docker group
+# WHY: Allows running docker commands without sudo
+# SECURITY: Be aware this gives jenkins user root-equivalent access
+add_jenkins_to_docker_group: true
+
+# DOCKER COMPOSE
+# --------------
+# WHAT: Whether to install Docker Compose
+# WHY: Multi-container builds
+install_docker_compose: true
+
+# ----------------------------------------------------------------------------
+# AGENT LABELS
+# ----------------------------------------------------------------------------
+# Labels help controller route jobs to appropriate agents
+# ----------------------------------------------------------------------------
+
+# DEFAULT LABELS
+# --------------
+# WHAT: Labels assigned to this agent type
+# WHY: Jobs can request specific labels (e.g., "docker", "linux")
+# USAGE: In Jenkinsfile: agent { label 'docker && linux' }
+jenkins_agent_labels:
+  - linux
+  - docker
+  - ubuntu
+
+# ----------------------------------------------------------------------------
+# RESOURCE LIMITS
+# ----------------------------------------------------------------------------
+
+# EXECUTORS
+# ---------
+# WHAT: Number of concurrent builds this agent can run
+# WHY: Depends on CPU/memory - more executors = more parallel builds
+# FORMULA: Usually 1-2 per CPU core
+# NOTE: Set at runtime when agent connects to controller
+jenkins_agent_executors: 2
+
+# ----------------------------------------------------------------------------
+# CLEANUP SETTINGS
+# ----------------------------------------------------------------------------
+
+# WORKSPACE CLEANUP
+# -----------------
+# WHAT: Whether to enable automatic workspace cleanup
+# WHY: Prevents disk from filling up with old build artifacts
+workspace_cleanup_enabled: true
+
+# WORKSPACE MAX AGE
+# -----------------
+# WHAT: Days to keep workspace after last build
+# WHY: Balance between disk space and rebuild speed
+workspace_max_age_days: 7

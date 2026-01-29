@@ -1,0 +1,207 @@
+# ============================================================================
+# JENKINS AGENT PLAYBOOK
+# ============================================================================
+# PURPOSE: Configure a server as a Jenkins Agent (Slave)
+# LOCATION: ansible/playbooks/jenkins-agent.yml
+# USAGE: ansible-playbook playbooks/jenkins-agent.yml
+# PACKER: Called by packer/jenkins-agent.pkr.hcl
+# ============================================================================
+#
+# WHAT THIS PLAYBOOK DOES:
+# 1. Runs common role (base packages, users, system config)
+# 2. Runs java role (installs Java JDK - required for agent)
+# 3. Runs jenkins-agent role (build tools, workspace setup)
+#
+# WHAT THIS PLAYBOOK DOES NOT DO:
+# - Install Jenkins server (that's controller only)
+# - Mount EFS (agents use local storage)
+# - Configure Jenkins jobs (that's on controller)
+#
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# PLAY: Configure Jenkins Agent
+# ----------------------------------------------------------------------------
+- name: Configure Jenkins Agent
+  # HOSTS: Which servers to run on
+  # - For Packer: "all" (Packer provides a single host)
+  # - For direct use: specify inventory group
+  hosts: all
+  
+  # BECOME: Run tasks as root (sudo)
+  become: yes
+  
+  # GATHER_FACTS: Collect system information
+  gather_facts: yes
+
+  # --------------------------------------------------------------------------
+  # VARIABLES
+  # --------------------------------------------------------------------------
+  vars:
+    # Identify this as an agent node
+    node_type: "agent"
+    
+    # Agent-specific settings
+    # These can be overridden with -e flag
+    
+    # Install Docker for containerized builds
+    install_docker: true
+    
+    # Install Maven for Java builds
+    install_maven: true
+    
+    # Install Node.js for JavaScript builds
+    install_nodejs: true
+    
+    # Install Python for scripting and Python builds
+    install_python: true
+
+  # --------------------------------------------------------------------------
+  # PRE-TASKS
+  # --------------------------------------------------------------------------
+  pre_tasks:
+    - name: Display playbook information
+      debug:
+        msg: |
+          ============================================
+          Jenkins Agent Playbook
+          ============================================
+          Target: {{ inventory_hostname }}
+          Node Type: {{ node_type }}
+          
+          Build Tools:
+          - Docker: {{ install_docker }}
+          - Maven: {{ install_maven }}
+          - Node.js: {{ install_nodejs }}
+          - Python: {{ install_python }}
+          ============================================
+
+    - name: Verify we're running on a supported OS
+      fail:
+        msg: "This playbook only supports Ubuntu. Detected: {{ ansible_distribution }}"
+      when: ansible_distribution != "Ubuntu"
+
+  # --------------------------------------------------------------------------
+  # ROLES
+  # --------------------------------------------------------------------------
+  roles:
+    # ROLE 1: Common
+    # --------------
+    # Base setup for all servers
+    # - System updates
+    # - Common packages
+    # - Jenkins user creation
+    - role: common
+      tags:
+        - common
+        - base
+
+    # ROLE 2: Java
+    # ------------
+    # Install Java JDK
+    # - Required for Jenkins agent to run
+    # - Agent process is a Java application
+    - role: java
+      tags:
+        - java
+        - jdk
+
+    # ROLE 3: Jenkins Agent
+    # ---------------------
+    # Configure server as Jenkins agent
+    # - Create workspace directories
+    # - Install build tools (Docker, Maven, Node.js, Python)
+    # - Configure SSH for controller connection
+    - role: jenkins-agent
+      tags:
+        - jenkins
+        - agent
+
+  # --------------------------------------------------------------------------
+  # POST-TASKS
+  # --------------------------------------------------------------------------
+  post_tasks:
+    - name: Verify Java is available
+      command: java -version
+      register: java_check
+      changed_when: false
+
+    - name: Verify Docker is available
+      command: docker --version
+      register: docker_check
+      changed_when: false
+      when: install_docker | bool
+      ignore_errors: yes
+
+    - name: Verify Maven is available
+      command: mvn --version
+      register: maven_check
+      changed_when: false
+      when: install_maven | bool
+      ignore_errors: yes
+
+    - name: Verify Node.js is available
+      command: node --version
+      register: node_check
+      changed_when: false
+      when: install_nodejs | bool
+      ignore_errors: yes
+
+    - name: Display completion summary
+      debug:
+        msg: |
+          ============================================
+          Jenkins Agent Setup Complete!
+          ============================================
+          Hostname: {{ ansible_hostname }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          
+          Java: {{ java_version }}
+          
+          Build Tools Installed:
+          {% if install_docker %}
+          - Docker: {{ docker_check.stdout | default('installed') }}
+          {% endif %}
+          {% if install_maven %}
+          - Maven: installed
+          {% endif %}
+          {% if install_nodejs %}
+          - Node.js: {{ node_check.stdout | default('installed') }}
+          {% endif %}
+          {% if install_python %}
+          - Python 3: installed
+          {% endif %}
+          
+          Agent User: {{ jenkins_agent_user }}
+          Agent Home: {{ jenkins_agent_home }}
+          Workspace: {{ jenkins_agent_workspace }}
+          
+          Labels: {{ jenkins_agent_labels | join(', ') }}
+          
+          Next Steps:
+          1. Add this agent to Jenkins controller
+          2. Configure agent credentials (SSH key)
+          3. Set labels and executors
+          ============================================
+
+# ============================================================================
+# USAGE EXAMPLES
+# ============================================================================
+#
+# 1. Run with Packer:
+#    packer build jenkins-agent.pkr.hcl
+#
+# 2. Run directly on a server:
+#    ansible-playbook playbooks/jenkins-agent.yml -i inventory/hosts
+#
+# 3. Run without Docker:
+#    ansible-playbook playbooks/jenkins-agent.yml -e "install_docker=false"
+#
+# 4. Run specific tags only:
+#    ansible-playbook playbooks/jenkins-agent.yml --tags "agent"
+#
+# 5. Dry run (check mode):
+#    ansible-playbook playbooks/jenkins-agent.yml --check
+#
+# ============================================================================

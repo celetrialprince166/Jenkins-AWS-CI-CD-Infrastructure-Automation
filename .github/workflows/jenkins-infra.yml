@@ -1,0 +1,573 @@
+# ============================================================================
+# GITHUB ACTIONS WORKFLOW - Jenkins Infrastructure Pipeline
+# ============================================================================
+# PURPOSE: Automate validation, building, and deployment of Jenkins infrastructure
+# LOCATION: .github/workflows/jenkins-infra.yml
+# ============================================================================
+#
+# PIPELINE STAGES:
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  STAGE 1: VALIDATE (Parallel)                                           │
+# │  ├── Packer Validate    - Check Packer templates syntax                 │
+# │  ├── Ansible Lint       - Check Ansible playbooks/roles                 │
+# │  └── Terraform Validate - Check Terraform configuration                 │
+# │                                                                         │
+# │  STAGE 2: BUILD (Sequential, main branch only)                          │
+# │  ├── Build Controller AMI - Create Jenkins controller image             │
+# │  └── Build Agent AMI      - Create Jenkins agent image                  │
+# │                                                                         │
+# │  STAGE 3: PLAN (Sequential)                                             │
+# │  └── Terraform Plan - Preview infrastructure changes                    │
+# │                                                                         │
+# │  STAGE 4: APPLY (Manual approval required)                              │
+# │  └── Terraform Apply - Deploy infrastructure changes                    │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# TRIGGERS:
+# - Push to main: Full pipeline (validate → build → plan → apply)
+# - Pull Request: Validation only (no build/deploy)
+# - Manual: workflow_dispatch for on-demand runs
+#
+# ============================================================================
+
+name: Jenkins Infrastructure Pipeline
+
+# ============================================================================
+# TRIGGERS - When does this workflow run?
+# ============================================================================
+on:
+  # Run on push to main branch
+  push:
+    branches: [main]
+    paths:
+      - 'packer/**'
+      - 'ansible/**'
+      - 'terraform/**'
+      - '.github/workflows/**'
+
+  # Run on pull requests to main
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packer/**'
+      - 'ansible/**'
+      - 'terraform/**'
+      - '.github/workflows/**'
+
+  # Manual trigger with inputs
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      skip_build:
+        description: 'Skip AMI build (use existing AMIs)'
+        required: false
+        default: false
+        type: boolean
+      force_apply:
+        description: 'Force apply without manual approval (dev only)'
+        required: false
+        default: false
+        type: boolean
+
+# ============================================================================
+# ENVIRONMENT VARIABLES - Shared across all jobs
+# ============================================================================
+env:
+  # AWS Configuration
+  AWS_REGION: eu-west-1
+
+  # Tool Versions - Pin for reproducibility
+  TF_VERSION: "1.10.0"    # Required for S3 native state locking (use_lockfile)
+  PACKER_VERSION: "1.10.0"
+  ANSIBLE_VERSION: "2.16.0"
+
+  # Terraform Settings
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+# ============================================================================
+# CONCURRENCY - Prevent parallel runs on same branch
+# ============================================================================
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ============================================================================
+# JOBS
+# ============================================================================
+jobs:
+  # ==========================================================================
+  # STAGE 1: VALIDATION (Parallel Jobs)
+  # ==========================================================================
+  # WHY: Catch errors early before expensive build/deploy steps
+  # HOW: Run all validation in parallel for speed
+  # ==========================================================================
+
+  # --------------------------------------------------------------------------
+  # Job: Validate Packer Templates
+  # --------------------------------------------------------------------------
+  validate-packer:
+    name: "Validate Packer"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Packer Init
+        run: packer init .
+        working-directory: packer
+
+      - name: Packer Format Check
+        run: packer fmt -check -recursive .
+        working-directory: packer
+
+      - name: Packer Validate - Controller
+        run: |
+          # Validate using -only flag to target specific source
+          packer validate -only="amazon-ebs.jenkins_controller" .
+        working-directory: packer
+
+      - name: Packer Validate - Agent
+        run: |
+          # Validate using -only flag to target specific source
+          packer validate -only="amazon-ebs.jenkins_agent" .
+        working-directory: packer
+
+  # --------------------------------------------------------------------------
+  # Job: Validate Ansible Playbooks
+  # --------------------------------------------------------------------------
+  validate-ansible:
+    name: "Validate Ansible"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Ansible and Lint
+        run: |
+          pip install ansible==${{ env.ANSIBLE_VERSION }} ansible-lint yamllint
+
+      - name: YAML Lint
+        run: |
+          yamllint -d relaxed ansible/
+        continue-on-error: true  # Warning only
+
+      - name: Ansible Lint
+        run: |
+          ansible-lint ansible/playbooks/ ansible/roles/
+        continue-on-error: true  # Warning only for now
+
+      - name: Ansible Syntax Check - Controller
+        run: |
+          ansible-playbook playbooks/jenkins-controller.yml --syntax-check
+        working-directory: ansible
+
+      - name: Ansible Syntax Check - Agent
+        run: |
+          ansible-playbook playbooks/jenkins-agent.yml --syntax-check
+        working-directory: ansible
+
+  # --------------------------------------------------------------------------
+  # Job: Validate Terraform Configuration
+  # --------------------------------------------------------------------------
+  validate-terraform:
+    name: "Validate Terraform"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      - name: Terraform Init
+        run: terraform init -backend=false
+        working-directory: terraform
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: terraform
+
+  # ==========================================================================
+  # STAGE 2: BUILD AMIs (Sequential, main branch only)
+  # ==========================================================================
+  # WHY: Create immutable machine images with all software pre-installed
+  # WHEN: Only on main branch (not PRs) to save time and money
+  # ==========================================================================
+
+  # --------------------------------------------------------------------------
+  # Job: Build Controller AMI
+  # --------------------------------------------------------------------------
+  build-controller-ami:
+    name: "Build Controller AMI"
+    needs: [validate-packer, validate-ansible, validate-terraform]
+    if: |
+      github.ref == 'refs/heads/main' && 
+      github.event_name != 'pull_request' &&
+      (github.event.inputs.skip_build != 'true' || github.event.inputs.skip_build == null)
+    runs-on: ubuntu-latest
+    outputs:
+      ami_id: ${{ steps.build.outputs.ami_id }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Setup Python (for Ansible)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: pip install ansible==${{ env.ANSIBLE_VERSION }}
+
+      - name: Packer Init
+        run: packer init .
+        working-directory: packer
+
+      - name: Build Controller AMI
+        id: build
+        run: |
+          echo "::group::Packer Build Output"
+          # Use -only flag to build specific source from shared variables file
+          packer build \
+            -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -only="amazon-ebs.jenkins_controller" \
+            . | tee build.log
+          echo "::endgroup::"
+          
+          # Extract AMI ID from manifest
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' manifest-controller.json | cut -d: -f2)
+          echo "Controller AMI ID: $AMI_ID"
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+        working-directory: packer
+
+      - name: Upload Build Manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-manifest
+          path: packer/manifest-controller.json
+          retention-days: 30
+
+  # --------------------------------------------------------------------------
+  # Job: Build Agent AMI
+  # --------------------------------------------------------------------------
+  build-agent-ami:
+    name: "Build Agent AMI"
+    needs: [validate-packer, validate-ansible, validate-terraform]
+    if: |
+      github.ref == 'refs/heads/main' && 
+      github.event_name != 'pull_request' &&
+      (github.event.inputs.skip_build != 'true' || github.event.inputs.skip_build == null)
+    runs-on: ubuntu-latest
+    outputs:
+      ami_id: ${{ steps.build.outputs.ami_id }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Setup Python (for Ansible)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: pip install ansible==${{ env.ANSIBLE_VERSION }}
+
+      - name: Packer Init
+        run: packer init .
+        working-directory: packer
+
+      - name: Build Agent AMI
+        id: build
+        run: |
+          echo "::group::Packer Build Output"
+          # Use -only flag to build specific source from shared variables file
+          packer build \
+            -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -only="amazon-ebs.jenkins_agent" \
+            . | tee build.log
+          echo "::endgroup::"
+          
+          # Extract AMI ID from manifest
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' manifest-agent.json | cut -d: -f2)
+          echo "Agent AMI ID: $AMI_ID"
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+        working-directory: packer
+
+      - name: Upload Build Manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-manifest
+          path: packer/manifest-agent.json
+          retention-days: 30
+
+  # ==========================================================================
+  # STAGE 3: TERRAFORM PLAN
+  # ==========================================================================
+  # WHY: Preview changes before applying to catch issues
+  # HOW: Run terraform plan and save output for review
+  # ==========================================================================
+
+  terraform-plan:
+    name: "Terraform Plan"
+    needs: [build-controller-ami, build-agent-ami]
+    if: always() && (needs.build-controller-ami.result == 'success' || needs.build-controller-ami.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      plan_exitcode: ${{ steps.plan.outputs.exitcode }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          # Build variable arguments
+          PLAN_ARGS=""
+          
+          # Use new AMI IDs if builds succeeded
+          if [ -n "${{ needs.build-controller-ami.outputs.ami_id }}" ]; then
+            PLAN_ARGS="$PLAN_ARGS -var=controller_ami_id=${{ needs.build-controller-ami.outputs.ami_id }}"
+          fi
+          
+          if [ -n "${{ needs.build-agent-ami.outputs.ami_id }}" ]; then
+            PLAN_ARGS="$PLAN_ARGS -var=agent_ami_id=${{ needs.build-agent-ami.outputs.ami_id }}"
+          fi
+          
+          # Set environment
+          PLAN_ARGS="$PLAN_ARGS -var=environment=${{ github.event.inputs.environment || 'dev' }}"
+          
+          echo "::group::Terraform Plan"
+          terraform plan $PLAN_ARGS -out=tfplan -detailed-exitcode 2>&1 | tee plan.txt
+          EXITCODE=${PIPESTATUS[0]}
+          echo "::endgroup::"
+          
+          echo "exitcode=$EXITCODE" >> $GITHUB_OUTPUT
+          
+          # Exit codes: 0 = no changes, 1 = error, 2 = changes present
+          if [ $EXITCODE -eq 1 ]; then
+            echo "::error::Terraform plan failed"
+            exit 1
+          fi
+        working-directory: terraform
+        continue-on-error: true
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: |
+            terraform/tfplan
+            terraform/plan.txt
+          retention-days: 7
+
+      - name: Comment Plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('terraform/plan.txt', 'utf8');
+            const maxLength = 65000;
+            const truncatedPlan = plan.length > maxLength 
+              ? plan.substring(0, maxLength) + '\n\n... (truncated)'
+              : plan;
+            
+            const output = `## Terraform Plan Results
+            
+            <details>
+            <summary>Click to expand plan output</summary>
+            
+            \`\`\`hcl
+            ${truncatedPlan}
+            \`\`\`
+            
+            </details>
+            
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+  # ==========================================================================
+  # STAGE 4: TERRAFORM APPLY (Manual Approval Required)
+  # ==========================================================================
+  # WHY: Deploy infrastructure changes safely with human review
+  # WHEN: Only after plan succeeds and approval is granted
+  # ==========================================================================
+
+  terraform-apply:
+    name: "Terraform Apply"
+    needs: [terraform-plan, build-controller-ami, build-agent-ami]
+    if: |
+      github.ref == 'refs/heads/main' && 
+      github.event_name != 'pull_request' &&
+      needs.terraform-plan.outputs.plan_exitcode == '2'
+    runs-on: ubuntu-latest
+    environment: 
+      name: ${{ github.event.inputs.environment || 'dev' }}
+      url: ${{ steps.output.outputs.alb_dns }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Download Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: terraform
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      - name: Terraform Apply
+        run: |
+          echo "::group::Terraform Apply"
+          terraform apply -auto-approve tfplan
+          echo "::endgroup::"
+        working-directory: terraform
+
+      - name: Get Outputs
+        id: output
+        run: |
+          ALB_DNS=$(terraform output -raw alb_dns_name 2>/dev/null || echo "")
+          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
+          
+          echo "## Deployment Outputs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Output | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ALB DNS | $ALB_DNS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ github.event.inputs.environment || 'dev' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Controller AMI | ${{ needs.build-controller-ami.outputs.ami_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Agent AMI | ${{ needs.build-agent-ami.outputs.ami_id }} |" >> $GITHUB_STEP_SUMMARY
+        working-directory: terraform
+
+  # ==========================================================================
+  # CLEANUP JOB (Optional - runs on failure)
+  # ==========================================================================
+  cleanup-on-failure:
+    name: "Cleanup on Failure"
+    needs: [terraform-apply]
+    if: failure()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Notify Failure
+        run: |
+          echo "::error::Pipeline failed! Check the logs for details."
+          echo "## Pipeline Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The deployment pipeline encountered an error." >> $GITHUB_STEP_SUMMARY
+          echo "Please review the failed job logs and take appropriate action." >> $GITHUB_STEP_SUMMARY
+
+# ============================================================================
+# WORKFLOW SUMMARY
+# ============================================================================
+#
+# REQUIRED SECRETS (Configure in GitHub Settings > Secrets):
+# - AWS_ACCESS_KEY_ID: AWS access key for deployment
+# - AWS_SECRET_ACCESS_KEY: AWS secret key for deployment
+#
+# REQUIRED ENVIRONMENTS (Configure in GitHub Settings > Environments):
+# - dev: Development environment (optional approval)
+# - staging: Staging environment (recommended approval)
+# - prod: Production environment (required approval + wait timer)
+#
+# USAGE:
+# 1. Push to main branch → Full pipeline runs
+# 2. Create PR → Validation only
+# 3. Manual trigger → Choose environment and options
+#
+# ============================================================================

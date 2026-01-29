@@ -1,0 +1,70 @@
+# ============================================================================
+# JENKINS CONTROLLER ROLE - Handlers
+# ============================================================================
+# PURPOSE: Define actions triggered by 'notify' in tasks
+# LOCATION: ansible/roles/jenkins-controller/handlers/main.yml
+# BEHAVIOR: Handlers run ONCE at the end, even if notified multiple times
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# HANDLER: Restart Jenkins
+# ----------------------------------------------------------------------------
+# WHEN: Called when Jenkins configuration changes
+# WHY: Jenkins needs restart to pick up config changes
+# HOW: Uses systemd to restart the jenkins service
+# NOTE: This handler is called by name from tasks using 'notify: Restart Jenkins'
+# ----------------------------------------------------------------------------
+- name: Restart Jenkins
+  systemd:
+    name: jenkins
+    state: restarted
+    daemon_reload: yes
+  # Wait for Jenkins to be fully up before continuing
+  # This prevents subsequent tasks from failing
+  register: jenkins_restart
+  until: jenkins_restart is success
+  retries: 3
+  delay: 10
+
+# ----------------------------------------------------------------------------
+# HANDLER: Reload Jenkins
+# ----------------------------------------------------------------------------
+# WHEN: Called for minor config changes that don't need full restart
+# WHY: Reload is faster than restart
+# NOTE: Not all changes can be reloaded - some require restart
+# ----------------------------------------------------------------------------
+- name: Reload Jenkins
+  systemd:
+    name: jenkins
+    state: reloaded
+  ignore_errors: yes  # Reload might not be supported
+
+# ----------------------------------------------------------------------------
+# HANDLER: Reload systemd
+# ----------------------------------------------------------------------------
+# WHEN: Called when systemd service file changes
+# WHY: systemd needs to re-read service files after changes
+# ----------------------------------------------------------------------------
+- name: Reload systemd
+  systemd:
+    daemon_reload: yes
+
+# ----------------------------------------------------------------------------
+# HANDLER: Wait for Jenkins
+# ----------------------------------------------------------------------------
+# WHEN: Called after Jenkins starts/restarts
+# WHY: Jenkins takes time to fully initialize
+# HOW: Poll the login page until it responds
+# TIMEOUT: 5 minutes should be enough for most cases
+# ----------------------------------------------------------------------------
+- name: Wait for Jenkins to start
+  uri:
+    url: "http://localhost:{{ jenkins_http_port }}/login"
+    method: GET
+    status_code: 200
+  register: jenkins_status
+  until: jenkins_status.status == 200
+  retries: 30  # 30 retries x 10 seconds = 5 minutes
+  delay: 10
+  ignore_errors: yes  # Don't fail if Jenkins is slow to start

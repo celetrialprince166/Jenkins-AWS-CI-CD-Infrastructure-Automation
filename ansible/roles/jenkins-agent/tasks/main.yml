@@ -1,0 +1,501 @@
+# ============================================================================
+# JENKINS AGENT ROLE - Installation Tasks
+# ============================================================================
+# PURPOSE: Configure a server to act as a Jenkins Agent (Slave)
+# LOCATION: ansible/roles/jenkins-agent/tasks/main.yml
+# REQUIRES: common role, java role must run first
+# ============================================================================
+#
+# WHAT THIS ROLE DOES:
+# 1. Creates jenkins user with SSH access
+# 2. Sets up workspace directories
+# 3. Installs build tools (Docker, Maven, Node.js, Python)
+# 4. Configures the agent to accept connections from controller
+#
+# WHAT THIS ROLE DOES NOT DO:
+# - Install Jenkins server (that's controller only)
+# - Mount EFS (agents use local storage)
+# - Configure Jenkins jobs (that's on controller)
+#
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# TASK 1: Display configuration
+# ----------------------------------------------------------------------------
+- name: Display Jenkins Agent configuration
+  debug:
+    msg: |
+      Configuring Jenkins Agent with:
+      - User: {{ jenkins_agent_user }}
+      - Home: {{ jenkins_agent_home }}
+      - Workspace: {{ jenkins_agent_workspace }}
+      - Docker: {{ install_docker }}
+      - Maven: {{ install_maven }}
+      - Node.js: {{ install_nodejs }}
+
+# ============================================================================
+# SECTION: USER AND DIRECTORY SETUP
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# TASK 2: Ensure jenkins group exists
+# ----------------------------------------------------------------------------
+# WHY: Group must exist before creating user
+# NOTE: May already exist from common role, but ensure it's there
+# ----------------------------------------------------------------------------
+- name: Ensure jenkins group exists
+  group:
+    name: "{{ jenkins_agent_group }}"
+    state: present
+
+# ----------------------------------------------------------------------------
+# TASK 3: Create jenkins user for agent
+# ----------------------------------------------------------------------------
+# WHY: Agent process runs as this user
+# HOW: Create user with home directory and bash shell
+# NOTE: Different home than controller (/home/jenkins vs /var/lib/jenkins)
+# ----------------------------------------------------------------------------
+- name: Create jenkins user for agent
+  user:
+    name: "{{ jenkins_agent_user }}"
+    group: "{{ jenkins_agent_group }}"
+    home: "{{ jenkins_agent_home }}"
+    shell: /bin/bash
+    create_home: yes
+    state: present
+
+# ----------------------------------------------------------------------------
+# TASK 4: Create agent directories
+# ----------------------------------------------------------------------------
+# WHY: Agent needs directories for workspace, tools, and SSH
+# HOW: Create with correct ownership
+# ----------------------------------------------------------------------------
+- name: Create agent directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ jenkins_agent_user }}"
+    group: "{{ jenkins_agent_group }}"
+    mode: '0755'
+  loop:
+    - "{{ jenkins_agent_home }}"
+    - "{{ jenkins_agent_workspace }}"
+    - "{{ jenkins_agent_tools_dir }}"
+    - "{{ jenkins_agent_ssh_dir }}"
+
+# ----------------------------------------------------------------------------
+# TASK 5: Set SSH directory permissions
+# ----------------------------------------------------------------------------
+# WHY: SSH requires strict permissions on .ssh directory
+# HOW: 700 for directory, 600 for files
+# SECURITY: SSH refuses to work if permissions are too open
+# ----------------------------------------------------------------------------
+- name: Set SSH directory permissions
+  file:
+    path: "{{ jenkins_agent_ssh_dir }}"
+    state: directory
+    owner: "{{ jenkins_agent_user }}"
+    group: "{{ jenkins_agent_group }}"
+    mode: '0700'
+
+# ----------------------------------------------------------------------------
+# TASK 6: Create authorized_keys file
+# ----------------------------------------------------------------------------
+# WHY: Controller's public key will be added here
+# HOW: Create empty file with correct permissions
+# NOTE: Actual key is added by Terraform/EC2 plugin at runtime
+# ----------------------------------------------------------------------------
+- name: Create authorized_keys file
+  file:
+    path: "{{ jenkins_agent_authorized_keys }}"
+    state: touch
+    owner: "{{ jenkins_agent_user }}"
+    group: "{{ jenkins_agent_group }}"
+    mode: '0600'
+  changed_when: false
+
+# ============================================================================
+# SECTION: DOCKER INSTALLATION
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# TASK 7: Install Docker prerequisites
+# ----------------------------------------------------------------------------
+# WHY: Docker needs these packages for repository setup
+# CONDITION: Only if install_docker is true
+# ----------------------------------------------------------------------------
+- name: Install Docker prerequisites
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+  when: install_docker | bool
+
+# ----------------------------------------------------------------------------
+# TASK 8: Add Docker GPG key
+# ----------------------------------------------------------------------------
+# WHY: Verify Docker packages are authentic
+# HOW: Download and add Docker's official GPG key
+# ----------------------------------------------------------------------------
+- name: Add Docker GPG key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+  when: install_docker | bool
+  retries: 3
+  delay: 10
+
+# ----------------------------------------------------------------------------
+# TASK 9: Add Docker repository
+# ----------------------------------------------------------------------------
+# WHY: Docker isn't in default Ubuntu repos
+# HOW: Add official Docker repository
+# ----------------------------------------------------------------------------
+- name: Add Docker repository
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+    filename: docker
+  when: install_docker | bool
+
+# ----------------------------------------------------------------------------
+# TASK 10: Install Docker
+# ----------------------------------------------------------------------------
+# WHY: Docker is essential for containerized builds
+# PACKAGES: docker-ce (engine), docker-ce-cli (client), containerd.io (runtime)
+# ----------------------------------------------------------------------------
+- name: Install Docker
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+    state: present
+    update_cache: yes
+  when: install_docker | bool
+  retries: 3
+  delay: 10
+
+# ----------------------------------------------------------------------------
+# TASK 11: Add jenkins user to docker group
+# ----------------------------------------------------------------------------
+# WHY: Allows jenkins to run docker commands without sudo
+# SECURITY: This gives jenkins user significant system access
+# NOTE: User must log out/in for group change to take effect
+# ----------------------------------------------------------------------------
+- name: Add jenkins user to docker group
+  user:
+    name: "{{ jenkins_agent_user }}"
+    groups: docker
+    append: yes  # Don't remove from other groups
+  when: 
+    - install_docker | bool
+    - add_jenkins_to_docker_group | bool
+
+# ----------------------------------------------------------------------------
+# TASK 12: Start and enable Docker service
+# ----------------------------------------------------------------------------
+- name: Start and enable Docker service
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+  when: install_docker | bool
+
+# ----------------------------------------------------------------------------
+# TASK 13: Install Docker Compose
+# ----------------------------------------------------------------------------
+# WHY: Many projects use docker-compose for multi-container setups
+# HOW: Install via apt (Docker Compose V2)
+# ----------------------------------------------------------------------------
+- name: Install Docker Compose
+  apt:
+    name: docker-compose-plugin
+    state: present
+  when: 
+    - install_docker | bool
+    - install_docker_compose | bool
+
+# ============================================================================
+# SECTION: MAVEN INSTALLATION
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# TASK 14: Install Maven
+# ----------------------------------------------------------------------------
+# WHY: Maven is the standard build tool for Java projects
+# HOW: Install from Ubuntu repos (or download specific version)
+# ----------------------------------------------------------------------------
+- name: Install Maven
+  apt:
+    name: maven
+    state: present
+  when: install_maven | bool
+
+# ----------------------------------------------------------------------------
+# TASK 15: Verify Maven installation
+# ----------------------------------------------------------------------------
+- name: Verify Maven installation
+  command: mvn --version
+  register: maven_version_output
+  changed_when: false
+  when: install_maven | bool
+
+- name: Display Maven version
+  debug:
+    msg: "{{ maven_version_output.stdout_lines }}"
+  when: 
+    - install_maven | bool
+    - maven_version_output is defined
+
+# ============================================================================
+# SECTION: NODE.JS INSTALLATION
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# TASK 16: Add NodeSource repository
+# ----------------------------------------------------------------------------
+# WHY: Ubuntu's default Node.js is often outdated
+# HOW: Use NodeSource repository for latest LTS
+# ----------------------------------------------------------------------------
+- name: Add NodeSource GPG key
+  apt_key:
+    url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+    state: present
+  when: install_nodejs | bool
+  retries: 3
+  delay: 10
+
+- name: Add NodeSource repository
+  apt_repository:
+    repo: "deb https://deb.nodesource.com/node_{{ nodejs_version }}.x nodistro main"
+    state: present
+    filename: nodesource
+  when: install_nodejs | bool
+
+# ----------------------------------------------------------------------------
+# TASK 17: Install Node.js
+# ----------------------------------------------------------------------------
+- name: Install Node.js
+  apt:
+    name: nodejs
+    state: present
+    update_cache: yes
+  when: install_nodejs | bool
+  retries: 3
+  delay: 10
+
+# ----------------------------------------------------------------------------
+# TASK 18: Verify Node.js installation
+# ----------------------------------------------------------------------------
+- name: Verify Node.js installation
+  command: node --version
+  register: node_version_output
+  changed_when: false
+  when: install_nodejs | bool
+
+- name: Display Node.js version
+  debug:
+    msg: "Node.js {{ node_version_output.stdout }}, npm {{ npm_version_output.stdout | default('unknown') }}"
+  when: 
+    - install_nodejs | bool
+    - node_version_output is defined
+
+- name: Get npm version
+  command: npm --version
+  register: npm_version_output
+  changed_when: false
+  when: install_nodejs | bool
+
+# ============================================================================
+# SECTION: PYTHON INSTALLATION
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# TASK 19: Install Python 3 and pip
+# ----------------------------------------------------------------------------
+# WHY: Python is used for scripting and some build tools
+# ----------------------------------------------------------------------------
+- name: Install Python 3 and pip
+  apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+    state: present
+  when: install_python | bool
+
+# ----------------------------------------------------------------------------
+# TASK 20: Install Python packages
+# ----------------------------------------------------------------------------
+# WHY: Common Python tools needed for builds
+# HOW: Use pip to install packages
+# ----------------------------------------------------------------------------
+- name: Install Python packages
+  pip:
+    name: "{{ python_packages }}"
+    state: present
+    executable: pip3
+  when: install_python | bool
+
+# ============================================================================
+# SECTION: ADDITIONAL TOOLS
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# TASK 21: Install additional build tools
+# ----------------------------------------------------------------------------
+# WHY: Common tools needed for various build types
+# ----------------------------------------------------------------------------
+- name: Install additional build tools
+  apt:
+    name:
+      - build-essential  # gcc, make, etc.
+      - zip
+      - unzip
+      - jq              # JSON processing
+      - tree            # Directory visualization
+      - rsync           # File synchronization
+    state: present
+
+# ============================================================================
+# SECTION: AGENT CONFIGURATION
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# TASK 22: Configure SSH for jenkins user
+# ----------------------------------------------------------------------------
+# WHY: Controller connects via SSH to launch agent
+# HOW: Ensure SSH is configured correctly
+# ----------------------------------------------------------------------------
+- name: Configure SSH client for jenkins user
+  copy:
+    dest: "{{ jenkins_agent_home }}/.ssh/config"
+    content: |
+      # SSH client configuration for Jenkins agent
+      # Managed by Ansible
+      
+      Host *
+        StrictHostKeyChecking no
+        UserKnownHostsFile /dev/null
+        ServerAliveInterval 60
+        ServerAliveCountMax 3
+    owner: "{{ jenkins_agent_user }}"
+    group: "{{ jenkins_agent_group }}"
+    mode: '0600'
+
+# ----------------------------------------------------------------------------
+# TASK 23: Set environment variables for jenkins user
+# ----------------------------------------------------------------------------
+# WHY: Build tools need environment variables
+# HOW: Add to .bashrc
+# ----------------------------------------------------------------------------
+- name: Configure environment for jenkins user
+  blockinfile:
+    path: "{{ jenkins_agent_home }}/.bashrc"
+    block: |
+      # Jenkins Agent Environment Configuration
+      # Managed by Ansible - do not edit manually
+      
+      export JAVA_HOME={{ java_home }}
+      export PATH=$JAVA_HOME/bin:$PATH
+      
+      # Maven
+      export MAVEN_HOME=/usr/share/maven
+      export PATH=$MAVEN_HOME/bin:$PATH
+      
+      # Workspace
+      export WORKSPACE={{ jenkins_agent_workspace }}
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - Jenkins Agent"
+    create: yes
+    owner: "{{ jenkins_agent_user }}"
+    group: "{{ jenkins_agent_group }}"
+    mode: '0644'
+
+# ----------------------------------------------------------------------------
+# TASK 24: Create agent info file
+# ----------------------------------------------------------------------------
+# WHY: Useful for debugging and identification
+# HOW: Create a file with agent information
+# ----------------------------------------------------------------------------
+- name: Create agent info file
+  copy:
+    dest: "{{ jenkins_agent_home }}/agent-info.txt"
+    content: |
+      # Jenkins Agent Information
+      # Generated by Ansible on {{ ansible_date_time.iso8601 }}
+      
+      Hostname: {{ ansible_hostname }}
+      IP Address: {{ ansible_default_ipv4.address | default('unknown') }}
+      OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      
+      Java: {{ java_version }}
+      Docker: {{ install_docker }}
+      Maven: {{ install_maven }}
+      Node.js: {{ install_nodejs }}
+      Python: {{ install_python }}
+      
+      Workspace: {{ jenkins_agent_workspace }}
+      Labels: {{ jenkins_agent_labels | join(', ') }}
+    owner: "{{ jenkins_agent_user }}"
+    group: "{{ jenkins_agent_group }}"
+    mode: '0644'
+
+# ============================================================================
+# SECTION: FINAL VERIFICATION
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# TASK 25: Verify all installations
+# ----------------------------------------------------------------------------
+- name: Verify Java is available
+  command: java -version
+  register: java_check
+  changed_when: false
+
+- name: Verify Docker is available
+  command: docker --version
+  register: docker_check
+  changed_when: false
+  when: install_docker | bool
+
+# ----------------------------------------------------------------------------
+# TASK 26: Display completion message
+# ----------------------------------------------------------------------------
+- name: Jenkins Agent configuration completed
+  debug:
+    msg: |
+      ============================================
+      Jenkins Agent configured successfully!
+      ============================================
+      User: {{ jenkins_agent_user }}
+      Home: {{ jenkins_agent_home }}
+      Workspace: {{ jenkins_agent_workspace }}
+      
+      Installed tools:
+      - Java: {{ java_version }}
+      {% if install_docker %}
+      - Docker: {{ docker_check.stdout | default('installed') }}
+      {% endif %}
+      {% if install_maven %}
+      - Maven: installed
+      {% endif %}
+      {% if install_nodejs %}
+      - Node.js: {{ nodejs_version }}
+      {% endif %}
+      {% if install_python %}
+      - Python 3: installed
+      {% endif %}
+      
+      Labels: {{ jenkins_agent_labels | join(', ') }}
+      
+      Next steps:
+      1. Add this agent to Jenkins controller
+      2. Configure agent labels and executors
+      3. Test a build job
+      ============================================

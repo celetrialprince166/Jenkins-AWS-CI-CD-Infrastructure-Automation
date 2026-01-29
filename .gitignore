@@ -1,0 +1,92 @@
+##############################
+# Core project ignores
+##############################
+
+# Cursor / editor metadata
+.cursor/
+
+# User-specific or local configuration
+.vscode/
+.idea/
+*.swp
+*.swo
+
+##############################
+# Content & learning material
+##############################
+
+# Project learning / notes that shouldn't go to GitHub
+content/
+docs/learning/
+cursor_jenkins_aws_iac_architecture.md
+# Large or generated images/docs (keep only curated ones explicitly)
+# docs/images/*.png
+docs/images/*.jpg
+docs/images/*.jpeg
+docs/images/*.svg
+cursor_project_readme_file_generation.md
+cursor_session_manager_and_key_placemen.md
+##############################
+# Terraform
+##############################
+
+# Local Terraform state
+*.tfstate
+*.tfstate.backup
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Local .terraform working directory
+.terraform/
+
+# Override files (local-only)
+terraform.tfvars
+*.auto.tfvars
+
+##############################
+# Packer
+##############################
+
+# Build manifests and logs
+packer/manifest-*.json
+packer/build.log
+
+# Local Packer environment files
+packer/*.auto.pkrvars.hcl
+packer/*.pkrvars.hcl
+
+##############################
+# Ansible
+##############################
+
+# Local inventory / secrets
+ansible/inventory/
+ansible/*.retry
+
+##############################
+# Scripts / test artifacts
+##############################
+
+scripts/*.log
+scripts/*.tmp
+
+##############################
+# OS / tooling
+##############################
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+
+# Node (if ever used in future)
+node_modules/
+

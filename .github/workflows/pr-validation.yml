@@ -1,0 +1,166 @@
+# ============================================================================
+# GITHUB ACTIONS WORKFLOW - Pull Request Validation
+# ============================================================================
+# PURPOSE: Fast validation for pull requests (no builds, no deploys)
+# LOCATION: .github/workflows/pr-validation.yml
+# ============================================================================
+#
+# WHY SEPARATE WORKFLOW?
+# - PRs don't need to build AMIs (expensive, slow)
+# - PRs don't need to deploy (dangerous)
+# - Fast feedback loop for developers
+#
+# ============================================================================
+
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, synchronize, reopened]
+
+env:
+  TF_VERSION: "1.10.0"    # Required for S3 native state locking (use_lockfile)
+  PACKER_VERSION: "1.10.0"
+  ANSIBLE_VERSION: "2.16.0"
+
+# Cancel previous runs on same PR
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ==========================================================================
+  # VALIDATION MATRIX - Run all checks in parallel
+  # ==========================================================================
+  
+  validate:
+    name: "Validate ${{ matrix.tool }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false  # Continue other checks if one fails
+      matrix:
+        include:
+          - tool: packer
+            working_dir: packer
+          - tool: terraform
+            working_dir: terraform
+          - tool: ansible
+            working_dir: ansible
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # --------------------------------------------------------------------------
+      # Packer Validation
+      # --------------------------------------------------------------------------
+      - name: Setup Packer
+        if: matrix.tool == 'packer'
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Packer Init & Validate
+        if: matrix.tool == 'packer'
+        run: |
+          packer init .
+          packer fmt -check -recursive .
+          # Validate using -only flag to target specific sources
+          packer validate -only="amazon-ebs.jenkins_controller" .
+          packer validate -only="amazon-ebs.jenkins_agent" .
+        working-directory: ${{ matrix.working_dir }}
+
+      # --------------------------------------------------------------------------
+      # Terraform Validation
+      # --------------------------------------------------------------------------
+      - name: Setup Terraform
+        if: matrix.tool == 'terraform'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Validate
+        if: matrix.tool == 'terraform'
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false
+          terraform validate
+        working-directory: ${{ matrix.working_dir }}
+
+      # --------------------------------------------------------------------------
+      # Ansible Validation
+      # --------------------------------------------------------------------------
+      - name: Setup Python
+        if: matrix.tool == 'ansible'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Ansible Validate
+        if: matrix.tool == 'ansible'
+        run: |
+          pip install ansible==${{ env.ANSIBLE_VERSION }} ansible-lint yamllint
+          ansible-playbook playbooks/jenkins-controller.yml --syntax-check
+          ansible-playbook playbooks/jenkins-agent.yml --syntax-check
+        working-directory: ${{ matrix.working_dir }}
+
+  # ==========================================================================
+  # SECURITY SCAN - Check for secrets and vulnerabilities
+  # ==========================================================================
+  security-scan:
+    name: "Security Scan"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for scanning
+
+      - name: Run Gitleaks (Secret Detection)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true  # Don't fail PR, just warn
+
+      - name: Run Checkov (IaC Security)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          framework: terraform
+          soft_fail: true  # Don't fail PR, just warn
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+
+      - name: Upload Checkov Results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+        continue-on-error: true
+
+  # ==========================================================================
+  # PR SUMMARY - Aggregate results
+  # ==========================================================================
+  pr-summary:
+    name: "PR Summary"
+    needs: [validate, security-scan]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Generate Summary
+        run: |
+          echo "## Pull Request Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Validation | ${{ needs.validate.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Scan | ${{ needs.security-scan.result == 'success' && '✅ Passed' || '⚠️ Check Results' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "- Review any failed checks above" >> $GITHUB_STEP_SUMMARY
+          echo "- Once merged to main, the full pipeline will run" >> $GITHUB_STEP_SUMMARY
+          echo "- AMIs will be built and infrastructure deployed" >> $GITHUB_STEP_SUMMARY

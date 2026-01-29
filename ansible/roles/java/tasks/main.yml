@@ -1,0 +1,147 @@
+# ============================================================================
+# JAVA ROLE - Installation Tasks
+# ============================================================================
+# PURPOSE: Install and configure Java JDK
+# LOCATION: ansible/roles/java/tasks/main.yml
+# USED BY: Both controller and agent playbooks
+# VARIABLES: See defaults/main.yml and group_vars/all.yml
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# TASK 1: Display Java configuration
+# ----------------------------------------------------------------------------
+# WHY: Helpful for debugging - shows which version will be installed
+# HOW: Debug message with variable values
+# ----------------------------------------------------------------------------
+- name: Display Java configuration
+  debug:
+    msg: |
+      Installing Java with the following configuration:
+      - Version: {{ java_version }}
+      - Package: {{ java_package }}
+      - JAVA_HOME: {{ java_home }}
+
+# ----------------------------------------------------------------------------
+# TASK 2: Install Java JDK
+# ----------------------------------------------------------------------------
+# WHY: Jenkins requires Java to run (it's a Java application)
+# HOW: Use apt module to install the OpenJDK package
+# PACKAGE: openjdk-17-jdk includes JRE + development tools
+# IDEMPOTENT: state=present means "install if missing, skip if present"
+# ----------------------------------------------------------------------------
+- name: Install Java JDK {{ java_version }}
+  apt:
+    name: "{{ java_package }}"
+    state: present
+    update_cache: yes
+  register: java_install
+  retries: 3
+  delay: 10
+  until: java_install is success
+
+# ----------------------------------------------------------------------------
+# TASK 3: Verify Java installation
+# ----------------------------------------------------------------------------
+# WHY: Confirm Java was installed correctly before proceeding
+# HOW: Run 'java -version' and capture output
+# FAIL: If this fails, something went wrong with installation
+# ----------------------------------------------------------------------------
+- name: Verify Java installation
+  command: java -version
+  register: java_version_output
+  changed_when: false  # This command doesn't change anything
+
+- name: Display installed Java version
+  debug:
+    msg: "{{ java_version_output.stderr_lines }}"
+  # Note: java -version outputs to stderr, not stdout (Java quirk)
+
+# ----------------------------------------------------------------------------
+# TASK 4: Set JAVA_HOME in /etc/environment
+# ----------------------------------------------------------------------------
+# WHY: Many tools need JAVA_HOME environment variable
+#      /etc/environment is read by all login shells
+# HOW: Add a line to /etc/environment
+# IDEMPOTENT: lineinfile only adds if not present, updates if different
+# CONDITION: Only if set_java_home is true (default)
+# ----------------------------------------------------------------------------
+- name: Set JAVA_HOME environment variable
+  lineinfile:
+    path: /etc/environment
+    regexp: '^JAVA_HOME='
+    line: 'JAVA_HOME={{ java_home }}'
+    state: present
+    create: yes
+  when: set_java_home | bool
+
+# ----------------------------------------------------------------------------
+# TASK 5: Add JAVA_HOME/bin to PATH
+# ----------------------------------------------------------------------------
+# WHY: Ensures java, javac commands are available system-wide
+# HOW: Create a script in /etc/profile.d/ that runs on login
+# NOTE: /etc/profile.d/*.sh scripts are sourced by /etc/profile
+# ----------------------------------------------------------------------------
+- name: Create Java profile script
+  copy:
+    dest: /etc/profile.d/java.sh
+    content: |
+      # Java environment configuration
+      # Managed by Ansible - do not edit manually
+      export JAVA_HOME={{ java_home }}
+      export PATH=$JAVA_HOME/bin:$PATH
+    mode: '0644'
+    owner: root
+    group: root
+  when: set_java_home | bool
+
+# ----------------------------------------------------------------------------
+# TASK 6: Set Java as default using update-alternatives
+# ----------------------------------------------------------------------------
+# WHY: If multiple Java versions are installed, this sets our version as default
+# HOW: update-alternatives manages symlinks for commands with multiple versions
+# COMMANDS: java, javac, jar are the main ones
+# PRIORITY: Higher number = higher priority = becomes default
+# ----------------------------------------------------------------------------
+- name: Set Java {{ java_version }} as default (java)
+  alternatives:
+    name: java
+    path: "{{ java_home }}/bin/java"
+    link: /usr/bin/java
+    priority: "{{ java_alternatives_priority }}"
+  ignore_errors: yes  # OK if alternatives not set up yet
+
+- name: Set Java {{ java_version }} as default (javac)
+  alternatives:
+    name: javac
+    path: "{{ java_home }}/bin/javac"
+    link: /usr/bin/javac
+    priority: "{{ java_alternatives_priority }}"
+  ignore_errors: yes
+
+# ----------------------------------------------------------------------------
+# TASK 7: Verify JAVA_HOME is set correctly
+# ----------------------------------------------------------------------------
+# WHY: Final verification that everything is configured properly
+# HOW: Check that JAVA_HOME directory exists and contains java binary
+# ----------------------------------------------------------------------------
+- name: Verify JAVA_HOME directory exists
+  stat:
+    path: "{{ java_home }}/bin/java"
+  register: java_binary
+
+- name: Fail if Java binary not found
+  fail:
+    msg: "Java binary not found at {{ java_home }}/bin/java"
+  when: not java_binary.stat.exists
+
+# ----------------------------------------------------------------------------
+# TASK 8: Display completion message
+# ----------------------------------------------------------------------------
+- name: Java role completed
+  debug:
+    msg: |
+      Java installation completed successfully!
+      - Version: {{ java_version }}
+      - JAVA_HOME: {{ java_home }}
+      - Binary: {{ java_home }}/bin/java

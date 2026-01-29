@@ -1,0 +1,298 @@
+# ============================================================================
+# JENKINS CONTROLLER ROLE - Installation Tasks
+# ============================================================================
+# PURPOSE: Install and configure Jenkins Controller (Master)
+# LOCATION: ansible/roles/jenkins-controller/tasks/main.yml
+# REQUIRES: common role, java role must run first
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# TASK 1: Display configuration
+# ----------------------------------------------------------------------------
+- name: Display Jenkins Controller configuration
+  debug:
+    msg: |
+      Installing Jenkins Controller with:
+      - Version: {{ jenkins_version }}
+      - Home: {{ jenkins_home }}
+      - HTTP Port: {{ jenkins_http_port }}
+      - Agent Port: {{ jenkins_agent_port }}
+      - User: {{ jenkins_user }}
+
+# ----------------------------------------------------------------------------
+# TASK 2: Add Jenkins apt repository key (official method 2025+)
+# ----------------------------------------------------------------------------
+# WHY: apt needs to verify packages are from official Jenkins project
+# HOW: Download GPG key to /etc/apt/keyrings/ (official location)
+# SOURCE: https://pkg.jenkins.io/debian-stable/
+# NOTE: Key updated December 2025, expires 2028
+# ----------------------------------------------------------------------------
+- name: Create apt keyrings directory
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Download Jenkins GPG key (2026 key)
+  get_url:
+    url: "https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key"
+    dest: /etc/apt/keyrings/jenkins-keyring.asc
+    mode: '0644'
+  retries: 3
+  delay: 10
+  register: jenkins_key
+  until: jenkins_key is success
+
+# ----------------------------------------------------------------------------
+# TASK 3: Add Jenkins apt repository
+# ----------------------------------------------------------------------------
+# WHY: Jenkins isn't in default Ubuntu repos
+# HOW: Add official Jenkins repository to apt sources with signed-by
+# FILE: Creates /etc/apt/sources.list.d/jenkins.list
+# ----------------------------------------------------------------------------
+- name: Add Jenkins apt repository
+  apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/"
+    state: present
+    filename: jenkins
+    update_cache: yes
+
+# ----------------------------------------------------------------------------
+# TASK 4: Install Jenkins
+# ----------------------------------------------------------------------------
+# WHY: This is the main Jenkins package
+# HOW: apt install jenkins
+# NOTE: This also creates jenkins user/group and systemd service
+# ----------------------------------------------------------------------------
+- name: Install Jenkins
+  apt:
+    name: jenkins
+    state: present
+    update_cache: yes
+  register: jenkins_install
+  retries: 3
+  delay: 10
+  until: jenkins_install is success
+
+# ----------------------------------------------------------------------------
+# TASK 5: Ensure Jenkins directories exist
+# ----------------------------------------------------------------------------
+# WHY: Jenkins needs these directories with correct permissions
+# HOW: Create directories and set ownership
+# ----------------------------------------------------------------------------
+- name: Ensure Jenkins directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0755'
+  loop:
+    - "{{ jenkins_home }}"
+    - "{{ jenkins_home }}/plugins"
+    - "{{ jenkins_home }}/init.groovy.d"
+    - /var/log/jenkins
+    - /var/run/jenkins
+    - /var/cache/jenkins
+
+# ----------------------------------------------------------------------------
+# TASK 6: Configure Jenkins
+# ----------------------------------------------------------------------------
+# WHY: Set Jenkins startup options (ports, memory, etc.)
+# HOW: Template the configuration file
+# NOTIFY: Restart Jenkins to apply changes
+# ----------------------------------------------------------------------------
+- name: Configure Jenkins
+  template:
+    src: jenkins.j2
+    dest: /etc/default/jenkins
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart Jenkins
+
+# ----------------------------------------------------------------------------
+# TASK 7: Configure Jenkins agent port
+# ----------------------------------------------------------------------------
+# WHY: Agents need to connect to controller on this port
+# HOW: Set the port in Jenkins config
+# FILE: jenkins.model.JenkinsLocationConfiguration.xml
+# ----------------------------------------------------------------------------
+- name: Ensure Jenkins config directory exists
+  file:
+    path: "{{ jenkins_home }}"
+    state: directory
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0755'
+
+# ----------------------------------------------------------------------------
+# TASK 8: Skip setup wizard (optional)
+# ----------------------------------------------------------------------------
+# WHY: We configure Jenkins via code, not manual wizard
+# HOW: Create a file that tells Jenkins to skip wizard
+# CONDITION: Only if jenkins_skip_setup_wizard is true
+# ----------------------------------------------------------------------------
+- name: Skip Jenkins setup wizard
+  copy:
+    dest: "{{ jenkins_home }}/jenkins.install.InstallUtil.lastExecVersion"
+    content: "{{ jenkins_version }}"
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0644'
+  when: jenkins_skip_setup_wizard | bool
+
+# Create the upgrade wizard skip file too
+- name: Skip Jenkins upgrade wizard
+  copy:
+    dest: "{{ jenkins_home }}/jenkins.install.UpgradeWizard.state"
+    content: "{{ jenkins_version }}"
+    owner: "{{ jenkins_user }}"
+    group: "{{ jenkins_group }}"
+    mode: '0644'
+  when: jenkins_skip_setup_wizard | bool
+
+# ----------------------------------------------------------------------------
+# TASK 9: Configure Jenkins systemd service
+# ----------------------------------------------------------------------------
+# WHY: Ensure Jenkins starts on boot and has correct limits
+# HOW: Create systemd override file
+# ----------------------------------------------------------------------------
+- name: Create Jenkins systemd override directory
+  file:
+    path: /etc/systemd/system/jenkins.service.d
+    state: directory
+    mode: '0755'
+
+- name: Configure Jenkins systemd overrides
+  copy:
+    dest: /etc/systemd/system/jenkins.service.d/override.conf
+    content: |
+      # Ansible managed - Jenkins systemd overrides
+      [Service]
+      # Increase file descriptor limits
+      LimitNOFILE=65535
+      LimitNPROC=65535
+      
+      # Restart on failure
+      Restart=on-failure
+      RestartSec=10
+      
+      # Environment
+      Environment="JAVA_HOME={{ java_home }}"
+    mode: '0644'
+  notify: Reload systemd
+
+# ----------------------------------------------------------------------------
+# TASK 10: Start and enable Jenkins service
+# ----------------------------------------------------------------------------
+# WHY: Jenkins should be running and start on boot
+# HOW: Use systemd to manage the service
+# ----------------------------------------------------------------------------
+- name: Start and enable Jenkins service
+  systemd:
+    name: jenkins
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+# ----------------------------------------------------------------------------
+# TASK 11: Wait for Jenkins to be ready
+# ----------------------------------------------------------------------------
+# WHY: Jenkins takes time to initialize on first start
+# HOW: Poll the login page until it responds
+# TIMEOUT: 5 minutes
+# ----------------------------------------------------------------------------
+- name: Wait for Jenkins to be ready
+  uri:
+    url: "http://localhost:{{ jenkins_http_port }}/login"
+    method: GET
+    status_code: 200
+  register: jenkins_ready
+  until: jenkins_ready.status == 200
+  retries: 30
+  delay: 10
+
+# ----------------------------------------------------------------------------
+# TASK 12: Get initial admin password
+# ----------------------------------------------------------------------------
+# WHY: Needed for first login (if not skipping wizard)
+# HOW: Read the secret file Jenkins creates
+# NOTE: This file is deleted after first login
+# ----------------------------------------------------------------------------
+- name: Check if initial admin password exists
+  stat:
+    path: "{{ jenkins_home }}/secrets/initialAdminPassword"
+  register: admin_password_file
+
+- name: Get initial admin password
+  command: cat {{ jenkins_home }}/secrets/initialAdminPassword
+  register: admin_password
+  when: admin_password_file.stat.exists
+  changed_when: false
+
+- name: Display initial admin password
+  debug:
+    msg: |
+      Jenkins initial admin password: {{ admin_password.stdout }}
+      URL: http://localhost:{{ jenkins_http_port }}
+  when: admin_password_file.stat.exists and admin_password.stdout is defined
+
+# ----------------------------------------------------------------------------
+# TASK 13: Install Jenkins plugins
+# ----------------------------------------------------------------------------
+# WHY: Plugins extend Jenkins functionality
+# HOW: Use jenkins-cli to install plugins
+# NOTE: This requires Jenkins to be running
+# ----------------------------------------------------------------------------
+- name: Download Jenkins CLI
+  get_url:
+    url: "http://localhost:{{ jenkins_http_port }}/jnlpJars/jenkins-cli.jar"
+    dest: /tmp/jenkins-cli.jar
+    mode: '0644'
+  retries: 5
+  delay: 10
+  register: cli_download
+  until: cli_download is success
+
+- name: Install Jenkins plugins
+  command: >
+    java -jar /tmp/jenkins-cli.jar 
+    -s http://localhost:{{ jenkins_http_port }}/ 
+    -auth admin:{{ admin_password.stdout }}
+    install-plugin {{ item }} -deploy
+  loop: "{{ jenkins_plugins }}"
+  when: admin_password_file.stat.exists and admin_password.stdout is defined
+  register: plugin_install
+  failed_when: false  # Don't fail if plugin already installed
+  changed_when: "'already installed' not in plugin_install.stderr | default('')"
+
+# ----------------------------------------------------------------------------
+# TASK 14: Restart Jenkins after plugin installation
+# ----------------------------------------------------------------------------
+- name: Restart Jenkins after plugin installation
+  systemd:
+    name: jenkins
+    state: restarted
+  when: plugin_install.changed | default(false)
+
+# ----------------------------------------------------------------------------
+# TASK 15: Final status
+# ----------------------------------------------------------------------------
+- name: Jenkins Controller installation completed
+  debug:
+    msg: |
+      ============================================
+      Jenkins Controller installed successfully!
+      ============================================
+      URL: http://localhost:{{ jenkins_http_port }}
+      Home: {{ jenkins_home }}
+      User: {{ jenkins_user }}
+      Agent Port: {{ jenkins_agent_port }}
+      
+      Next steps:
+      1. Access Jenkins via ALB URL
+      2. Configure security settings
+      3. Set up agent nodes
+      ============================================

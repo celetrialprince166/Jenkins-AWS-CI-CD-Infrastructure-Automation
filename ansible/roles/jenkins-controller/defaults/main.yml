@@ -1,0 +1,181 @@
+# ============================================================================
+# JENKINS CONTROLLER ROLE - Default Variables
+# ============================================================================
+# PURPOSE: Default values for Jenkins Controller installation
+# LOCATION: ansible/roles/jenkins-controller/defaults/main.yml
+# OVERRIDE: These can be overridden in group_vars/all.yml or playbook vars
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# JENKINS INSTALLATION
+# ----------------------------------------------------------------------------
+
+# JENKINS VERSION
+# ---------------
+# WHAT: Which Jenkins version to install
+# OPTIONS: "latest" or specific version like "2.426.1"
+# WHY: "latest" for dev, specific version for production stability
+jenkins_version: "latest"
+
+# JENKINS REPO KEY URL
+# --------------------
+# WHAT: GPG key for Jenkins apt repository
+# WHY: Verifies packages are from official Jenkins project
+# NOTE: Updated December 2025, expires 2028
+# SOURCE: https://pkg.jenkins.io/debian-stable/
+jenkins_repo_key_url: "https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key"
+
+# JENKINS REPO URL
+# ----------------
+# WHAT: Jenkins apt repository URL
+# OPTIONS: debian-stable (LTS) or debian (weekly releases)
+# WHY: debian-stable for production reliability
+jenkins_repo_url: "deb https://pkg.jenkins.io/debian-stable binary/"
+
+# ----------------------------------------------------------------------------
+# JENKINS CONFIGURATION
+# ----------------------------------------------------------------------------
+
+# JENKINS HOME
+# ------------
+# WHAT: Directory where Jenkins stores all data
+# WHY: This is where jobs, plugins, configs live
+# CRITICAL: This will be mounted to EFS for persistence
+jenkins_home: "/var/lib/jenkins"
+
+# JENKINS USER/GROUP
+# ------------------
+# WHAT: System user that runs Jenkins
+# WHY: Security - Jenkins should not run as root
+jenkins_user: "jenkins"
+jenkins_group: "jenkins"
+
+# JENKINS HTTP PORT
+# -----------------
+# WHAT: Port for Jenkins web UI
+# WHY: 8080 is default, ALB forwards 80/443 to this
+# NOTE: Don't use 80/443 directly - requires root
+jenkins_http_port: 8080
+
+# JENKINS HTTPS PORT
+# ------------------
+# WHAT: Port for HTTPS (if enabled directly on Jenkins)
+# WHY: Usually disabled - ALB handles SSL termination
+# NOTE: -1 means disabled
+jenkins_https_port: -1
+
+# JENKINS AGENT PORT
+# ------------------
+# WHAT: Port for inbound agent (JNLP) connections
+# WHY: Agents connect to controller on this port
+# PROTOCOL: TCP, Jenkins Remoting protocol
+jenkins_agent_port: 50000
+
+# JENKINS LISTEN ADDRESS
+# ----------------------
+# WHAT: Which IP address Jenkins binds to
+# OPTIONS: "0.0.0.0" (all interfaces) or specific IP
+# WHY: 0.0.0.0 allows connections from ALB
+jenkins_listen_address: "0.0.0.0"
+
+# ----------------------------------------------------------------------------
+# JENKINS JAVA OPTIONS
+# ----------------------------------------------------------------------------
+
+# JAVA HEAP SIZE
+# --------------
+# WHAT: Memory allocated to Jenkins JVM
+# WHY: Jenkins needs enough memory for builds and plugins
+# FORMAT: -Xms (initial) -Xmx (maximum)
+# SIZING: 
+#   - t3.medium (4GB RAM): -Xms1g -Xmx2g
+#   - t3.large (8GB RAM): -Xms2g -Xmx4g
+# NOTE: Leave room for OS and other processes
+jenkins_java_heap_size: "-Xms1g -Xmx2g"
+
+# JAVA OPTIONS
+# ------------
+# WHAT: Additional JVM options for Jenkins
+# WHY: Performance tuning and security settings
+#
+# -Djava.awt.headless=true : No GUI (server environment)
+# -Djenkins.install.runSetupWizard=false : Skip setup wizard (we configure via code)
+# -Dhudson.footerURL= : Remove Jenkins footer URL
+#
+jenkins_java_options: >-
+  {{ jenkins_java_heap_size }}
+  -Djava.awt.headless=true
+  -Djenkins.install.runSetupWizard=false
+  -Dhudson.footerURL=
+
+# ----------------------------------------------------------------------------
+# JENKINS PLUGINS
+# ----------------------------------------------------------------------------
+
+# INITIAL PLUGINS
+# ---------------
+# WHAT: Plugins to install during setup
+# WHY: These are essential for our CI/CD workflow
+# NOTE: More plugins can be added later via UI or JCasC
+#
+# CATEGORIES:
+# - Core: workflow-aggregator (Pipeline), git
+# - Agents: ec2, ssh-slaves
+# - Security: credentials, credentials-binding
+# - UI: blueocean, dashboard-view
+# - Integration: github, github-branch-source
+#
+jenkins_plugins:
+  # Pipeline (essential for modern Jenkins)
+  - workflow-aggregator
+  - pipeline-stage-view
+  
+  # Git integration
+  - git
+  - github
+  - github-branch-source
+  
+  # Credentials management
+  - credentials
+  - credentials-binding
+  - ssh-credentials
+  
+  # Agent management
+  - ssh-slaves
+  - ec2
+  
+  # UI improvements
+  - blueocean
+  - dashboard-view
+  
+  # Utility
+  - timestamper
+  - ws-cleanup
+  - build-timeout
+  - ansicolor
+
+# PLUGIN INSTALL TIMEOUT
+# ----------------------
+# WHAT: How long to wait for plugin installation
+# WHY: Some plugins are large and take time to download
+# UNIT: seconds
+jenkins_plugin_timeout: 120
+
+# ----------------------------------------------------------------------------
+# JENKINS SECURITY
+# ----------------------------------------------------------------------------
+
+# SKIP SETUP WIZARD
+# -----------------
+# WHAT: Whether to skip the initial setup wizard
+# WHY: We configure Jenkins via code, not manual wizard
+# NOTE: Set to false if you want manual initial setup
+jenkins_skip_setup_wizard: true
+
+# CSRF PROTECTION
+# ---------------
+# WHAT: Enable Cross-Site Request Forgery protection
+# WHY: Security best practice
+# NOTE: May need to disable for some API integrations
+jenkins_csrf_protection: true

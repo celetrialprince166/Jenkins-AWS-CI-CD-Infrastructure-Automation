@@ -1,0 +1,173 @@
+# ============================================================================
+# GITHUB ACTIONS WORKFLOW - AMI Cleanup
+# ============================================================================
+# PURPOSE: Clean up old AMIs to reduce storage costs
+# LOCATION: .github/workflows/ami-cleanup.yml
+# ============================================================================
+#
+# WHY THIS MATTERS:
+# - Each AMI costs ~$0.05/GB/month for storage
+# - Old AMIs accumulate over time
+# - This workflow keeps only recent AMIs
+#
+# SCHEDULE: Runs weekly on Sunday at midnight UTC
+#
+# ============================================================================
+
+name: AMI Cleanup
+
+on:
+  schedule:
+    # Run every Sunday at midnight UTC
+    - cron: '0 0 * * 0'
+  
+  workflow_dispatch:
+    inputs:
+      keep_count:
+        description: 'Number of AMIs to keep per type'
+        required: false
+        default: '5'
+        type: string
+      dry_run:
+        description: 'Dry run (show what would be deleted)'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  AWS_REGION: eu-west-1
+  KEEP_COUNT: ${{ github.event.inputs.keep_count || '5' }}
+
+jobs:
+  cleanup-amis:
+    name: "Cleanup Old AMIs"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Find and Cleanup Controller AMIs
+        run: |
+          echo "::group::Controller AMI Cleanup"
+          
+          # Get all controller AMIs sorted by creation date (newest first)
+          AMIS=$(aws ec2 describe-images \
+            --owners self \
+            --filters "Name=name,Values=jenkins-controller-*" \
+            --query 'Images | sort_by(@, &CreationDate) | reverse(@) | [*].[ImageId,Name,CreationDate]' \
+            --output text)
+          
+          echo "Found Controller AMIs:"
+          echo "$AMIS"
+          
+          # Count AMIs
+          TOTAL=$(echo "$AMIS" | wc -l)
+          echo "Total: $TOTAL, Keeping: ${{ env.KEEP_COUNT }}"
+          
+          # Skip if not enough AMIs to cleanup
+          if [ "$TOTAL" -le "${{ env.KEEP_COUNT }}" ]; then
+            echo "Not enough AMIs to cleanup. Skipping."
+            exit 0
+          fi
+          
+          # Get AMIs to delete (skip first KEEP_COUNT)
+          TO_DELETE=$(echo "$AMIS" | tail -n +$((${{ env.KEEP_COUNT }} + 1)) | awk '{print $1}')
+          
+          for AMI_ID in $TO_DELETE; do
+            echo "Processing: $AMI_ID"
+            
+            if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+              echo "[DRY RUN] Would delete: $AMI_ID"
+            else
+              # Get associated snapshots
+              SNAPSHOTS=$(aws ec2 describe-images \
+                --image-ids $AMI_ID \
+                --query 'Images[0].BlockDeviceMappings[*].Ebs.SnapshotId' \
+                --output text)
+              
+              # Deregister AMI
+              echo "Deregistering AMI: $AMI_ID"
+              aws ec2 deregister-image --image-id $AMI_ID
+              
+              # Delete snapshots
+              for SNAP_ID in $SNAPSHOTS; do
+                if [ "$SNAP_ID" != "None" ]; then
+                  echo "Deleting snapshot: $SNAP_ID"
+                  aws ec2 delete-snapshot --snapshot-id $SNAP_ID || true
+                fi
+              done
+            fi
+          done
+          
+          echo "::endgroup::"
+
+      - name: Find and Cleanup Agent AMIs
+        run: |
+          echo "::group::Agent AMI Cleanup"
+          
+          # Get all agent AMIs sorted by creation date (newest first)
+          AMIS=$(aws ec2 describe-images \
+            --owners self \
+            --filters "Name=name,Values=jenkins-agent-*" \
+            --query 'Images | sort_by(@, &CreationDate) | reverse(@) | [*].[ImageId,Name,CreationDate]' \
+            --output text)
+          
+          echo "Found Agent AMIs:"
+          echo "$AMIS"
+          
+          # Count AMIs
+          TOTAL=$(echo "$AMIS" | wc -l)
+          echo "Total: $TOTAL, Keeping: ${{ env.KEEP_COUNT }}"
+          
+          # Skip if not enough AMIs to cleanup
+          if [ "$TOTAL" -le "${{ env.KEEP_COUNT }}" ]; then
+            echo "Not enough AMIs to cleanup. Skipping."
+            exit 0
+          fi
+          
+          # Get AMIs to delete (skip first KEEP_COUNT)
+          TO_DELETE=$(echo "$AMIS" | tail -n +$((${{ env.KEEP_COUNT }} + 1)) | awk '{print $1}')
+          
+          for AMI_ID in $TO_DELETE; do
+            echo "Processing: $AMI_ID"
+            
+            if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+              echo "[DRY RUN] Would delete: $AMI_ID"
+            else
+              # Get associated snapshots
+              SNAPSHOTS=$(aws ec2 describe-images \
+                --image-ids $AMI_ID \
+                --query 'Images[0].BlockDeviceMappings[*].Ebs.SnapshotId' \
+                --output text)
+              
+              # Deregister AMI
+              echo "Deregistering AMI: $AMI_ID"
+              aws ec2 deregister-image --image-id $AMI_ID
+              
+              # Delete snapshots
+              for SNAP_ID in $SNAPSHOTS; do
+                if [ "$SNAP_ID" != "None" ]; then
+                  echo "Deleting snapshot: $SNAP_ID"
+                  aws ec2 delete-snapshot --snapshot-id $SNAP_ID || true
+                fi
+              done
+            fi
+          done
+          
+          echo "::endgroup::"
+
+      - name: Generate Summary
+        run: |
+          echo "## AMI Cleanup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Region | ${{ env.AWS_REGION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Keep Count | ${{ env.KEEP_COUNT }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry Run | ${{ github.event.inputs.dry_run || 'false' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run Time | $(date -u) |" >> $GITHUB_STEP_SUMMARY

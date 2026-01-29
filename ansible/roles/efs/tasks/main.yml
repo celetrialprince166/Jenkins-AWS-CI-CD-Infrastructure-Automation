@@ -1,0 +1,284 @@
+# ============================================================================
+# EFS ROLE - Mount Tasks
+# ============================================================================
+# PURPOSE: Mount AWS EFS filesystem for Jenkins data persistence
+# LOCATION: ansible/roles/efs/tasks/main.yml
+# USED BY: Controller playbook only (agents don't mount EFS)
+# ============================================================================
+#
+# IMPORTANT: This role requires efs_dns_name to be set!
+# The EFS DNS name is typically passed via:
+# - Terraform user_data script
+# - Packer variables (for testing)
+#
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# TASK 1: Display EFS configuration
+# ----------------------------------------------------------------------------
+- name: Display EFS configuration
+  debug:
+    msg: |
+      Configuring EFS mount:
+      - DNS Name: {{ efs_dns_name | default('NOT SET') }}
+      - Mount Point: {{ efs_mount_point }}
+      - Mount Options: {{ efs_mount_options }}
+      - Owner: {{ efs_owner }}:{{ efs_group }}
+
+# ----------------------------------------------------------------------------
+# TASK 2: Validate EFS DNS name is provided
+# ----------------------------------------------------------------------------
+# WHY: Can't mount EFS without knowing which filesystem to mount
+# FAIL: If efs_dns_name is empty, fail with helpful message
+# ----------------------------------------------------------------------------
+- name: Validate EFS DNS name is provided
+  fail:
+    msg: |
+      ERROR: efs_dns_name is not set!
+      
+      The EFS DNS name must be provided to mount the filesystem.
+      It should be in the format: fs-xxxxxxxx.efs.region.amazonaws.com
+      
+      This is typically set via:
+      - Terraform user_data script
+      - Packer build variables
+      - Ansible extra vars (-e efs_dns_name=...)
+  when: efs_dns_name is not defined or efs_dns_name == ""
+
+# ----------------------------------------------------------------------------
+# TASK 3: Install NFS client packages
+# ----------------------------------------------------------------------------
+# WHY: EFS uses NFS protocol, need client tools to mount
+# PACKAGES:
+# - nfs-common: NFS client utilities (mount.nfs, etc.)
+# - amazon-efs-utils: AWS EFS helper (optional but recommended)
+# ----------------------------------------------------------------------------
+- name: Install NFS client packages
+  apt:
+    name:
+      - nfs-common
+    state: present
+    update_cache: yes
+
+# ----------------------------------------------------------------------------
+# TASK 4: Install amazon-efs-utils (optional)
+# ----------------------------------------------------------------------------
+# WHY: Provides EFS mount helper with better error handling
+# NOTE: Not in default Ubuntu repos, need to install from source or skip
+# SKIP: For simplicity, we use standard NFS mount
+# ----------------------------------------------------------------------------
+# Uncomment if you want to use amazon-efs-utils:
+# - name: Clone amazon-efs-utils
+#   git:
+#     repo: https://github.com/aws/efs-utils
+#     dest: /tmp/efs-utils
+#   
+# - name: Build and install amazon-efs-utils
+#   shell: |
+#     cd /tmp/efs-utils
+#     ./build-deb.sh
+#     apt-get install -y ./build/amazon-efs-utils*deb
+#   args:
+#     creates: /usr/bin/mount.efs
+
+# ----------------------------------------------------------------------------
+# TASK 5: Stop Jenkins before mounting (if running)
+# ----------------------------------------------------------------------------
+# WHY: Can't mount over a directory that's in use
+# HOW: Stop Jenkins service if it's running
+# NOTE: Jenkins will be started after mount
+# ----------------------------------------------------------------------------
+- name: Check if Jenkins service exists
+  stat:
+    path: /etc/systemd/system/jenkins.service
+  register: jenkins_service_file
+
+- name: Check if Jenkins is running
+  systemd:
+    name: jenkins
+  register: jenkins_service_status
+  when: jenkins_service_file.stat.exists
+  ignore_errors: yes
+
+- name: Stop Jenkins before mounting EFS
+  systemd:
+    name: jenkins
+    state: stopped
+  when: 
+    - jenkins_service_file.stat.exists
+    - jenkins_service_status.status.ActiveState == "active"
+  ignore_errors: yes
+
+# ----------------------------------------------------------------------------
+# TASK 6: Backup existing Jenkins data (if any)
+# ----------------------------------------------------------------------------
+# WHY: If there's existing data in jenkins_home, preserve it
+# HOW: Move to temporary location, will be restored after mount
+# CONDITION: Only if directory exists and has content
+# ----------------------------------------------------------------------------
+- name: Check if Jenkins home has existing data
+  find:
+    paths: "{{ efs_mount_point }}"
+    file_type: any
+  register: existing_data
+  ignore_errors: yes
+
+- name: Backup existing Jenkins data
+  command: mv {{ efs_mount_point }} {{ efs_mount_point }}.backup
+  when: 
+    - existing_data.matched | default(0) > 0
+    - existing_data.files | default([]) | length > 0
+  ignore_errors: yes
+
+# ----------------------------------------------------------------------------
+# TASK 7: Create mount point directory
+# ----------------------------------------------------------------------------
+# WHY: Mount point must exist before mounting
+# HOW: Create directory with correct ownership
+# ----------------------------------------------------------------------------
+- name: Create EFS mount point directory
+  file:
+    path: "{{ efs_mount_point }}"
+    state: directory
+    owner: "{{ efs_owner }}"
+    group: "{{ efs_group }}"
+    mode: "{{ efs_mode }}"
+
+# ----------------------------------------------------------------------------
+# TASK 8: Wait for EFS to be available
+# ----------------------------------------------------------------------------
+# WHY: EFS mount target might not be immediately available
+# HOW: Try to reach EFS DNS name until successful
+# TIMEOUT: efs_wait_timeout seconds
+# ----------------------------------------------------------------------------
+- name: Wait for EFS to be available
+  wait_for:
+    host: "{{ efs_dns_name }}"
+    port: 2049  # NFS port
+    timeout: "{{ efs_wait_timeout }}"
+    state: started
+  when: wait_for_efs | bool
+
+# ----------------------------------------------------------------------------
+# TASK 9: Mount EFS filesystem
+# ----------------------------------------------------------------------------
+# WHY: This is the main task - mount EFS to Jenkins home
+# HOW: Use mount module with NFS options
+# IDEMPOTENT: Only mounts if not already mounted
+# ----------------------------------------------------------------------------
+- name: Mount EFS filesystem
+  mount:
+    path: "{{ efs_mount_point }}"
+    src: "{{ efs_dns_name }}:/"
+    fstype: nfs4
+    opts: "{{ efs_mount_options }}"
+    state: mounted  # Mount now AND add to fstab
+  register: efs_mount_result
+  retries: 5
+  delay: 10
+  until: efs_mount_result is success
+
+# ----------------------------------------------------------------------------
+# TASK 10: Verify EFS is mounted
+# ----------------------------------------------------------------------------
+# WHY: Confirm mount was successful before proceeding
+# HOW: Check mount output for our mount point
+# ----------------------------------------------------------------------------
+- name: Verify EFS is mounted
+  command: mount | grep {{ efs_mount_point }}
+  register: mount_check
+  changed_when: false
+  failed_when: efs_mount_point not in mount_check.stdout
+
+- name: Display mount verification
+  debug:
+    msg: "EFS mounted successfully: {{ mount_check.stdout }}"
+
+# ----------------------------------------------------------------------------
+# TASK 11: Set ownership on mounted filesystem
+# ----------------------------------------------------------------------------
+# WHY: EFS might have different ownership from previous mount
+# HOW: Set correct ownership for Jenkins
+# ----------------------------------------------------------------------------
+- name: Set ownership on EFS mount
+  file:
+    path: "{{ efs_mount_point }}"
+    owner: "{{ efs_owner }}"
+    group: "{{ efs_group }}"
+    mode: "{{ efs_mode }}"
+    recurse: no  # Don't recurse - might be slow on large filesystems
+
+# ----------------------------------------------------------------------------
+# TASK 12: Create Jenkins subdirectories on EFS
+# ----------------------------------------------------------------------------
+# WHY: Jenkins expects certain directories to exist
+# HOW: Create with correct ownership
+# ----------------------------------------------------------------------------
+- name: Create Jenkins directories on EFS
+  file:
+    path: "{{ efs_mount_point }}/{{ item }}"
+    state: directory
+    owner: "{{ efs_owner }}"
+    group: "{{ efs_group }}"
+    mode: '0755'
+  loop:
+    - jobs
+    - plugins
+    - secrets
+    - users
+    - nodes
+    - logs
+    - workspace
+
+# ----------------------------------------------------------------------------
+# TASK 13: Restore backed up data (if any)
+# ----------------------------------------------------------------------------
+# WHY: If we backed up existing data, restore it to EFS
+# HOW: Copy from backup location to mounted EFS
+# CONDITION: Only if backup exists
+# ----------------------------------------------------------------------------
+- name: Check if backup exists
+  stat:
+    path: "{{ efs_mount_point }}.backup"
+  register: backup_exists
+
+- name: Restore backed up Jenkins data
+  shell: cp -rp {{ efs_mount_point }}.backup/* {{ efs_mount_point }}/
+  when: backup_exists.stat.exists
+  ignore_errors: yes
+
+- name: Remove backup after restore
+  file:
+    path: "{{ efs_mount_point }}.backup"
+    state: absent
+  when: backup_exists.stat.exists
+
+# ----------------------------------------------------------------------------
+# TASK 14: Start Jenkins after mounting
+# ----------------------------------------------------------------------------
+# WHY: Jenkins was stopped before mounting, start it again
+# CONDITION: Only if Jenkins service exists
+# ----------------------------------------------------------------------------
+- name: Start Jenkins after EFS mount
+  systemd:
+    name: jenkins
+    state: started
+  when: jenkins_service_file.stat.exists
+  ignore_errors: yes
+
+# ----------------------------------------------------------------------------
+# TASK 15: Display completion message
+# ----------------------------------------------------------------------------
+- name: EFS mount completed
+  debug:
+    msg: |
+      ============================================
+      EFS mounted successfully!
+      ============================================
+      EFS DNS: {{ efs_dns_name }}
+      Mount Point: {{ efs_mount_point }}
+      Owner: {{ efs_owner }}:{{ efs_group }}
+      
+      Verify with: df -h {{ efs_mount_point }}
+      ============================================

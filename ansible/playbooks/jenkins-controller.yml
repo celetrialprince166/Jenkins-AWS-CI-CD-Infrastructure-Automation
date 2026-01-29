@@ -1,0 +1,201 @@
+# ============================================================================
+# JENKINS CONTROLLER PLAYBOOK
+# ============================================================================
+# PURPOSE: Configure a server as a Jenkins Controller (Master)
+# LOCATION: ansible/playbooks/jenkins-controller.yml
+# USAGE: ansible-playbook playbooks/jenkins-controller.yml
+# PACKER: Called by packer/jenkins-controller.pkr.hcl
+# ============================================================================
+#
+# WHAT THIS PLAYBOOK DOES:
+# 1. Runs common role (base packages, users, system config)
+# 2. Runs java role (installs Java JDK)
+# 3. Runs jenkins-controller role (installs Jenkins server)
+# 4. Runs efs role (mounts shared storage) - OPTIONAL during Packer build
+#
+# ROLE EXECUTION ORDER:
+# Roles run in the order listed. Each role completes before the next starts.
+#
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# PLAY: Configure Jenkins Controller
+# ----------------------------------------------------------------------------
+- name: Configure Jenkins Controller
+  # HOSTS: Which servers to run on
+  # - For Packer: "all" (Packer provides a single host)
+  # - For direct use: specify inventory group
+  hosts: all
+  
+  # BECOME: Run tasks as root (sudo)
+  # WHY: Most tasks need root privileges (installing packages, etc.)
+  become: yes
+  
+  # GATHER_FACTS: Collect system information
+  # WHY: Roles use facts like ansible_distribution, ansible_hostname
+  gather_facts: yes
+
+  # --------------------------------------------------------------------------
+  # VARIABLES
+  # --------------------------------------------------------------------------
+  # Variables specific to this playbook
+  # These override role defaults but are overridden by extra vars (-e)
+  # --------------------------------------------------------------------------
+  vars:
+    # Identify this as a controller node
+    node_type: "controller"
+    
+    # EFS mounting - set to false during Packer build (no EFS available)
+    # Set to true when deploying to actual infrastructure
+    # Override with: -e "mount_efs=true"
+    mount_efs: false
+    
+    # Skip EFS role during Packer build
+    # EFS is mounted at runtime via user_data script
+    skip_efs_role: true
+
+  # --------------------------------------------------------------------------
+  # PRE-TASKS
+  # --------------------------------------------------------------------------
+  # Tasks that run BEFORE roles
+  # --------------------------------------------------------------------------
+  pre_tasks:
+    - name: Display playbook information
+      debug:
+        msg: |
+          ============================================
+          Jenkins Controller Playbook
+          ============================================
+          Target: {{ inventory_hostname }}
+          Node Type: {{ node_type }}
+          Mount EFS: {{ mount_efs }}
+          ============================================
+
+    - name: Verify we're running on a supported OS
+      fail:
+        msg: "This playbook only supports Ubuntu. Detected: {{ ansible_distribution }}"
+      when: ansible_distribution != "Ubuntu"
+
+  # --------------------------------------------------------------------------
+  # ROLES
+  # --------------------------------------------------------------------------
+  # Roles execute in order listed
+  # Each role is a self-contained unit of configuration
+  # --------------------------------------------------------------------------
+  roles:
+    # ROLE 1: Common
+    # --------------
+    # Base setup for all servers
+    # - System updates
+    # - Common packages (git, curl, etc.)
+    # - Timezone configuration
+    # - Jenkins user creation
+    - role: common
+      tags:
+        - common
+        - base
+
+    # ROLE 2: Java
+    # ------------
+    # Install Java JDK
+    # - Required for Jenkins to run
+    # - Sets JAVA_HOME environment variable
+    - role: java
+      tags:
+        - java
+        - jdk
+
+    # ROLE 3: Jenkins Controller
+    # --------------------------
+    # Install and configure Jenkins server
+    # - Adds Jenkins repository
+    # - Installs Jenkins package
+    # - Configures ports and memory
+    # - Installs initial plugins
+    - role: jenkins-controller
+      tags:
+        - jenkins
+        - controller
+
+    # ROLE 4: EFS (Conditional)
+    # -------------------------
+    # Mount EFS filesystem for persistent storage
+    # - Only runs if mount_efs is true
+    # - Skipped during Packer build (no EFS available)
+    # - EFS is mounted at runtime via Terraform user_data
+    - role: efs
+      when: mount_efs | bool and not skip_efs_role | bool
+      tags:
+        - efs
+        - storage
+
+  # --------------------------------------------------------------------------
+  # POST-TASKS
+  # --------------------------------------------------------------------------
+  # Tasks that run AFTER all roles complete
+  # --------------------------------------------------------------------------
+  post_tasks:
+    - name: Verify Jenkins is running
+      systemd:
+        name: jenkins
+      register: jenkins_status
+      ignore_errors: yes
+
+    - name: Display Jenkins status
+      debug:
+        msg: |
+          Jenkins Service Status: {{ jenkins_status.status.ActiveState | default('unknown') }}
+          
+    - name: Get Jenkins version
+      command: java -jar /usr/share/java/jenkins.war --version
+      register: jenkins_version
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display completion summary
+      debug:
+        msg: |
+          ============================================
+          Jenkins Controller Setup Complete!
+          ============================================
+          Hostname: {{ ansible_hostname }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          
+          Java: {{ java_version }}
+          Jenkins: {{ jenkins_version.stdout | default('installed') }}
+          
+          Jenkins Home: {{ jenkins_home }}
+          HTTP Port: {{ jenkins_http_port }}
+          Agent Port: {{ jenkins_agent_port }}
+          
+          Service Status: {{ jenkins_status.status.ActiveState | default('unknown') }}
+          
+          {% if not mount_efs %}
+          NOTE: EFS not mounted (Packer build mode)
+          EFS will be mounted at runtime via user_data
+          {% endif %}
+          ============================================
+
+# ============================================================================
+# USAGE EXAMPLES
+# ============================================================================
+#
+# 1. Run with Packer (default - no EFS):
+#    packer build jenkins-controller.pkr.hcl
+#
+# 2. Run directly on a server:
+#    ansible-playbook playbooks/jenkins-controller.yml -i inventory/hosts
+#
+# 3. Run with EFS mounting:
+#    ansible-playbook playbooks/jenkins-controller.yml \
+#      -e "mount_efs=true" \
+#      -e "efs_dns_name=fs-xxxxx.efs.us-east-1.amazonaws.com"
+#
+# 4. Run specific tags only:
+#    ansible-playbook playbooks/jenkins-controller.yml --tags "jenkins"
+#
+# 5. Dry run (check mode):
+#    ansible-playbook playbooks/jenkins-controller.yml --check
+#
+# ============================================================================

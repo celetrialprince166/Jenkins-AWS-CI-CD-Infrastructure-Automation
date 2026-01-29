@@ -1,0 +1,57 @@
+# ============================================================================
+# JAVA ROLE - Default Variables
+# ============================================================================
+# PURPOSE: Default values for Java installation
+# LOCATION: ansible/roles/java/defaults/main.yml
+# OVERRIDE: These can be overridden in group_vars/all.yml or playbook vars
+# PRECEDENCE: defaults < group_vars < playbook vars < command line
+# ============================================================================
+---
+
+# JAVA VERSION
+# ------------
+# WHAT: Which major version of Java to install
+# WHY: Jenkins requires Java 11 or 17 (LTS versions)
+# OPTIONS: "11", "17", "21"
+# DEFAULT: "17" - Latest LTS, best compatibility with modern Jenkins
+# OVERRIDE: Set in group_vars/all.yml to change for entire project
+java_version: "17"
+
+# JAVA DISTRIBUTION
+# -----------------
+# WHAT: Which Java distribution to use
+# WHY: OpenJDK is free, open-source, and officially supported by Jenkins
+# OPTIONS: "openjdk", "adoptium", "corretto"
+# DEFAULT: "openjdk" - Comes with Ubuntu repositories
+java_distribution: "openjdk"
+
+# JAVA PACKAGE NAME
+# -----------------
+# WHAT: The exact apt package name to install
+# WHY: Package names vary by distribution and version
+# FORMAT: openjdk-{version}-jdk for Ubuntu
+# NOTE: JDK (not JRE) because Jenkins needs compiler tools for some plugins
+java_package: "openjdk-{{ java_version }}-jdk"
+
+# JAVA HOME PATH
+# --------------
+# WHAT: Directory where Java is installed
+# WHY: Many tools (Maven, Gradle, Jenkins) need JAVA_HOME environment variable
+# FORMAT: /usr/lib/jvm/java-{version}-openjdk-{arch}
+# NOTE: 'amd64' is for x86_64 architecture (most EC2 instances)
+java_home: "/usr/lib/jvm/java-{{ java_version }}-openjdk-amd64"
+
+# SET JAVA_HOME GLOBALLY
+# ----------------------
+# WHAT: Whether to set JAVA_HOME in /etc/environment
+# WHY: Makes JAVA_HOME available to all users and processes
+# DEFAULT: true - Jenkins and build tools need this
+set_java_home: true
+
+# JAVA ALTERNATIVES PRIORITY
+# --------------------------
+# WHAT: Priority for update-alternatives (when multiple Java versions installed)
+# WHY: Higher number = higher priority = default version
+# RANGE: 1-9999
+# DEFAULT: 1000 - High enough to be default
+java_alternatives_priority: 1000

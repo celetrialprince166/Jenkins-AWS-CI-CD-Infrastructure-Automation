@@ -1,0 +1,149 @@
+# ============================================================================
+# EFS ROLE - Default Variables
+# ============================================================================
+# PURPOSE: Default values for EFS (Elastic File System) mounting
+# LOCATION: ansible/roles/efs/defaults/main.yml
+# USED BY: Controller nodes only (agents don't mount EFS)
+# ============================================================================
+#
+# WHY EFS FOR JENKINS?
+# --------------------
+# 1. PERSISTENCE: Jenkins data survives instance termination
+# 2. SHARED ACCESS: Multiple controllers can mount same filesystem
+# 3. AUTO-SCALING: New instances automatically get all data
+# 4. MANAGED: AWS handles backups, replication, availability
+#
+# WHAT'S STORED ON EFS:
+# - /var/lib/jenkins/jobs/        → Job configurations and build history
+# - /var/lib/jenkins/plugins/     → Installed plugins
+# - /var/lib/jenkins/secrets/     → Credentials and secrets
+# - /var/lib/jenkins/config.xml   → Main Jenkins configuration
+# - /var/lib/jenkins/users/       → User configurations
+#
+# ============================================================================
+---
+
+# ----------------------------------------------------------------------------
+# EFS FILESYSTEM CONFIGURATION
+# ----------------------------------------------------------------------------
+
+# EFS DNS NAME
+# ------------
+# WHAT: DNS name of the EFS filesystem
+# FORMAT: fs-xxxxxxxx.efs.region.amazonaws.com
+# NOTE: This is passed at runtime by Terraform via user_data
+# EXAMPLE: fs-12345678.efs.us-east-1.amazonaws.com
+#
+# IMPORTANT: This variable MUST be set at runtime!
+# It's typically passed via:
+# - Packer variable (for AMI building with test EFS)
+# - Terraform user_data (for actual deployment)
+#
+efs_dns_name: ""  # Set at runtime
+
+# EFS FILESYSTEM ID
+# -----------------
+# WHAT: The EFS filesystem ID
+# FORMAT: fs-xxxxxxxx
+# NOTE: Alternative to DNS name for mounting
+efs_filesystem_id: ""  # Set at runtime
+
+# ----------------------------------------------------------------------------
+# MOUNT CONFIGURATION
+# ----------------------------------------------------------------------------
+
+# EFS MOUNT POINT
+# ---------------
+# WHAT: Where to mount the EFS filesystem
+# WHY: Must be Jenkins home directory for data persistence
+# CRITICAL: This MUST match jenkins_home variable
+efs_mount_point: "/var/lib/jenkins"
+
+# EFS MOUNT OPTIONS
+# -----------------
+# WHAT: Options passed to the mount command
+# WHY: Optimize performance and reliability for Jenkins workload
+#
+# OPTIONS EXPLAINED:
+# - nfsvers=4.1      : NFS version 4.1 (required for EFS)
+# - rsize=1048576    : Read buffer size 1MB (max for EFS)
+# - wsize=1048576    : Write buffer size 1MB (max for EFS)
+# - hard             : Retry indefinitely on failure (vs 'soft')
+# - timeo=600        : Timeout 60 seconds (in deciseconds)
+# - retrans=2        : Retry twice before timeout
+# - noresvport       : Use non-reserved ports (required for EFS)
+# - _netdev          : Network device - wait for network before mount
+#
+efs_mount_options: "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev"
+
+# ----------------------------------------------------------------------------
+# MOUNT BEHAVIOR
+# ----------------------------------------------------------------------------
+
+# MOUNT AT BOOT
+# -------------
+# WHAT: Whether to add EFS to /etc/fstab for automatic mounting
+# WHY: Ensures EFS is mounted after reboot
+# DEFAULT: true - Jenkins needs EFS to function
+mount_at_boot: true
+
+# WAIT FOR EFS
+# ------------
+# WHAT: Whether to wait for EFS to be available before mounting
+# WHY: EFS might not be immediately available on instance launch
+# HOW: Retry mount command until successful
+wait_for_efs: true
+
+# EFS WAIT TIMEOUT
+# ----------------
+# WHAT: How long to wait for EFS to be available (seconds)
+# WHY: EFS mount targets can take a moment to become available
+# DEFAULT: 300 seconds (5 minutes)
+efs_wait_timeout: 300
+
+# EFS WAIT INTERVAL
+# -----------------
+# WHAT: How often to retry mounting (seconds)
+# WHY: Don't hammer the mount command too frequently
+efs_wait_interval: 10
+
+# ----------------------------------------------------------------------------
+# OWNERSHIP CONFIGURATION
+# ----------------------------------------------------------------------------
+
+# EFS OWNER
+# ---------
+# WHAT: User that owns the mounted filesystem
+# WHY: Jenkins needs write access to its home directory
+efs_owner: "jenkins"
+
+# EFS GROUP
+# ---------
+# WHAT: Group that owns the mounted filesystem
+efs_group: "jenkins"
+
+# EFS MODE
+# --------
+# WHAT: Permissions on the mount point
+# WHY: Jenkins needs read/write, others need read for some operations
+efs_mode: "0755"
+
+# ----------------------------------------------------------------------------
+# BACKUP CONFIGURATION
+# ----------------------------------------------------------------------------
+
+# Note: EFS backup is typically configured in Terraform, not Ansible
+# These variables are for reference/documentation
+
+# EFS BACKUP ENABLED
+# ------------------
+# WHAT: Whether AWS Backup is enabled for this EFS
+# NOTE: Configure in Terraform, not here
+efs_backup_enabled: true
+
+# EFS LIFECYCLE POLICY
+# --------------------
+# WHAT: When to move files to Infrequent Access storage
+# OPTIONS: AFTER_7_DAYS, AFTER_14_DAYS, AFTER_30_DAYS, AFTER_60_DAYS, AFTER_90_DAYS
+# NOTE: Configure in Terraform, not here
+efs_lifecycle_policy: "AFTER_30_DAYS"

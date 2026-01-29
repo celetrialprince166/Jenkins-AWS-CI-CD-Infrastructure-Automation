@@ -1,0 +1,209 @@
+# ============================================================================
+# GLOBAL VARIABLES - Shared Across All Roles
+# ============================================================================
+# PURPOSE: Define variables used by multiple roles in one central location
+# LOCATION: ansible/group_vars/all.yml
+# USAGE: Any role can reference these as {{ variable_name }}
+# DOCS: https://docs.ansible.com/ansible/latest/user_guide/playbooks_variables.html
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# JAVA CONFIGURATION
+# ----------------------------------------------------------------------------
+# Used by: roles/java, roles/jenkins-controller, roles/jenkins-agent
+# ----------------------------------------------------------------------------
+
+# JAVA VERSION
+# ------------
+# WHAT: Which Java version to install
+# WHY: Jenkins requires Java 11 or 17 (LTS versions)
+# CHOICE: 17 is the latest LTS, recommended for new installations
+# NOTE: Jenkins 2.361+ requires Java 11 minimum, 2.357+ supports Java 17
+java_version: "17"
+
+# JAVA PACKAGE
+# ------------
+# WHAT: The exact package name to install
+# WHY: OpenJDK is free, open-source, and fully compatible with Jenkins
+# ALTERNATIVES: openjdk-11-jdk, amazon-corretto-17, etc.
+# NOTE: JDK (not JRE) because Jenkins needs compiler tools
+java_package: "openjdk-{{ java_version }}-jdk"
+
+# JAVA HOME
+# ---------
+# WHAT: Path where Java is installed
+# WHY: Some tools need JAVA_HOME environment variable set
+# NOTE: This path is standard for Ubuntu's OpenJDK packages
+java_home: "/usr/lib/jvm/java-{{ java_version }}-openjdk-amd64"
+
+# ----------------------------------------------------------------------------
+# JENKINS CONFIGURATION
+# ----------------------------------------------------------------------------
+# Used by: roles/jenkins-controller, roles/jenkins-agent
+# ----------------------------------------------------------------------------
+
+# JENKINS VERSION
+# ---------------
+# WHAT: Which Jenkins version to install
+# WHY: Pinning version ensures reproducible builds
+# OPTIONS: "latest" or specific version like "2.426.1"
+# RECOMMENDATION: Use specific version in production for stability
+# CHECK: https://www.jenkins.io/changelog-stable/ for LTS versions
+jenkins_version: "latest"
+
+# JENKINS HOME DIRECTORY
+# ----------------------
+# WHAT: Where Jenkins stores all its data
+# WHY: This is the standard location, and where we'll mount EFS
+# CONTAINS: jobs/, plugins/, secrets/, config.xml, etc.
+# CRITICAL: This directory MUST be on EFS for persistence
+jenkins_home: "/var/lib/jenkins"
+
+# JENKINS USER
+# ------------
+# WHAT: The system user that runs Jenkins
+# WHY: Jenkins creates this user during installation
+# SECURITY: Jenkins should NOT run as root
+jenkins_user: "jenkins"
+
+# JENKINS GROUP
+# -------------
+# WHAT: The system group for Jenkins
+# WHY: Used for file permissions on jenkins_home
+jenkins_group: "jenkins"
+
+# JENKINS HTTP PORT
+# -----------------
+# WHAT: Port Jenkins listens on for web UI
+# WHY: 8080 is the default, ALB will forward traffic here
+# NOTE: Don't use 80/443 - those require root privileges
+jenkins_http_port: 8080
+
+# JENKINS AGENT PORT
+# ------------------
+# WHAT: Port for JNLP agent connections
+# WHY: Agents connect to controller on this port
+# PROTOCOL: TCP, used by Jenkins Remoting protocol
+# NOTE: Must be open in security group between agents and controller
+jenkins_agent_port: 50000
+
+# ----------------------------------------------------------------------------
+# AWS/EFS CONFIGURATION
+# ----------------------------------------------------------------------------
+# Used by: roles/efs
+# NOTE: Some values are passed at runtime by Terraform/Packer
+# ----------------------------------------------------------------------------
+
+# EFS MOUNT POINT
+# ---------------
+# WHAT: Where to mount the EFS filesystem
+# WHY: We mount EFS at Jenkins home so all data is persistent
+# CRITICAL: Must match jenkins_home for data persistence
+efs_mount_point: "{{ jenkins_home }}"
+
+# EFS MOUNT OPTIONS
+# -----------------
+# WHAT: Options passed to the mount command
+# WHY: These options optimize EFS performance and reliability
+#
+# nfsvers=4.1    : Use NFS version 4.1 (required for EFS)
+# rsize=1048576  : Read buffer size (1MB) - improves throughput
+# wsize=1048576  : Write buffer size (1MB) - improves throughput
+# hard           : Retry NFS requests indefinitely (vs 'soft' which gives up)
+# timeo=600      : Timeout in deciseconds (60 seconds)
+# retrans=2      : Number of retries before timeout
+# noresvport     : Use non-reserved ports (required for EFS)
+#
+efs_mount_options: "nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport"
+
+# ----------------------------------------------------------------------------
+# SYSTEM CONFIGURATION
+# ----------------------------------------------------------------------------
+# Used by: roles/common
+# ----------------------------------------------------------------------------
+
+# TIMEZONE
+# --------
+# WHAT: System timezone
+# WHY: Consistent timestamps in logs, scheduled jobs
+# FORMAT: TZ database name (https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)
+system_timezone: "UTC"
+
+# COMMON PACKAGES
+# ---------------
+# WHAT: Packages installed on ALL servers (controller and agent)
+# WHY: These are essential tools for any server
+#
+# - curl, wget     : Download files from internet
+# - git            : Version control (Jenkins needs this for SCM)
+# - unzip          : Extract archives
+# - jq             : Parse JSON (useful for scripts)
+# - htop           : System monitoring
+# - vim            : Text editor for debugging
+# - nfs-common     : NFS client (required for EFS mounting)
+# - awscli         : AWS command line tools
+#
+common_packages:
+  - curl
+  - wget
+  - git
+  - unzip
+  - jq
+  - htop
+  - vim
+  - nfs-common
+  - awscli
+  - ca-certificates
+  - gnupg
+  - lsb-release
+
+# ----------------------------------------------------------------------------
+# AGENT-SPECIFIC CONFIGURATION
+# ----------------------------------------------------------------------------
+# Used by: roles/jenkins-agent
+# ----------------------------------------------------------------------------
+
+# AGENT TOOLS
+# -----------
+# WHAT: Build tools installed on agent nodes
+# WHY: Agents run builds, so they need compilers, package managers, etc.
+# CUSTOMIZE: Add/remove based on your project needs
+#
+# - docker.io      : Container builds
+# - maven          : Java builds
+# - nodejs, npm    : JavaScript builds
+# - python3, pip   : Python builds
+#
+agent_build_tools:
+  - docker.io
+  - maven
+  - nodejs
+  - npm
+  - python3
+  - python3-pip
+
+# AGENT WORKSPACE
+# ---------------
+# WHAT: Where agents store job workspaces
+# WHY: Separate from Jenkins home (which is on controller)
+# NOTE: This is local storage on the agent, not shared
+agent_workspace: "/home/jenkins/workspace"
+
+# ----------------------------------------------------------------------------
+# TAGS FOR ORGANIZATION
+# ----------------------------------------------------------------------------
+# Used by: All roles for consistent tagging
+# ----------------------------------------------------------------------------
+
+# PROJECT NAME
+# ------------
+# WHAT: Name used in tags and resource naming
+# WHY: Helps identify resources in AWS console
+project_name: "jenkins-infrastructure"
+
+# ENVIRONMENT
+# -----------
+# WHAT: Environment identifier
+# WHY: Distinguish between dev/staging/prod resources
+# NOTE: Override this in environment-specific var files
+environment: "dev"
