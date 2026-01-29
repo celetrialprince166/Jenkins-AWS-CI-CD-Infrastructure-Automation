@@ -1,0 +1,25 @@
+# ============================================================================
+# Ansible Galaxy Requirements
+# ============================================================================
+# PURPOSE: Define required Ansible collections and roles
+# LOCATION: ansible/requirements.yml
+# USAGE: ansible-galaxy install -r requirements.yml
+# ============================================================================
+---
+collections:
+  # Community General Collection
+  # Contains: timezone, sysctl, and many other common modules
+  # Required by: roles/common/tasks/main.yml
+  - name: community.general
+    version: ">=8.0.0"
+
+  # Amazon AWS Collection
+  # Contains: AWS modules for EC2, S3, EFS, etc.
+  # Required by: roles that interact with AWS services
+  - name: amazon.aws
+    version: ">=7.0.0"
+
+  # POSIX Collection
+  # Contains: authorized_key, sysctl, and other POSIX modules
+  - name: ansible.posix
+    version: ">=1.5.0"
