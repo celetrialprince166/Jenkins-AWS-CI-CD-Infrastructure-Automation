@@ -130,6 +130,8 @@ jobs:
       - name: Packer Init
         run: packer init .
         working-directory: packer
+        env:
+          PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Packer Format Check
         run: packer fmt -check -recursive .
@@ -275,6 +277,8 @@ jobs:
       - name: Packer Init
         run: packer init .
         working-directory: packer
+        env:
+          PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Controller AMI
         id: build
@@ -345,6 +349,8 @@ jobs:
       - name: Packer Init
         run: packer init .
         working-directory: packer
+        env:
+          PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Agent AMI
         id: build

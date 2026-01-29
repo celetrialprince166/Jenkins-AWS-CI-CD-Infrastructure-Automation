@@ -3,21 +3,29 @@
 # ============================================================================
 # PURPOSE: Define required Ansible collections and roles
 # LOCATION: ansible/requirements.yml
-# USAGE: ansible-galaxy install -r requirements.yml
+# USAGE: ansible-galaxy collection install -r requirements.yml
+# ============================================================================
+#
+# VERSION COMPATIBILITY:
+# - Ansible Core 2.16.x requires community.general 8.x (not 9.x+)
+# - community.general 9.0+ requires Ansible Core 2.17+
+# - community.general 12.0+ requires Ansible Core 2.18+
+#
 # ============================================================================
 ---
 collections:
   # Community General Collection
   # Contains: timezone, sysctl, and many other common modules
   # Required by: roles/common/tasks/main.yml
+  # PINNED: 8.x for Ansible Core 2.16 compatibility
   - name: community.general
-    version: ">=8.0.0"
+    version: ">=8.0.0,<9.0.0"
 
   # Amazon AWS Collection
   # Contains: AWS modules for EC2, S3, EFS, etc.
   # Required by: roles that interact with AWS services
   - name: amazon.aws
-    version: ">=7.0.0"
+    version: ">=7.0.0,<8.0.0"
 
   # POSIX Collection
   # Contains: authorized_key, sysctl, and other POSIX modules
